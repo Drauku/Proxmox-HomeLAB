@@ -3,6 +3,7 @@ Proxmox HomeLAB environment, consolidated configuration scripts.
 
 - **WARNING**: Do not run this script unless you understand what each line does.
 - **NOTE**: I am not responsible for anything that might happen to your systdem as a result of this script.
+- **NOTE**: This script is built to run on Proxmox 6.x versions, i.e. the "buster" codename.
 
 * SETUP: run this bash command in the terminal of a new (freshly installed) Proxmox node:
 * NOTE: The PVE installation must use ZFS for the boot partition, or you can comment those lines out.
@@ -20,4 +21,4 @@ Operations in the script:
   - Thanks to https://johnscs.com/remove-proxmox51-subscription-notice for breaking down this procedure into two quick commands.
 6. Install the PVEDiscordDark theme for the Proxmox GUI
   - Thanks to Weilbyte for his work on the PVEDiscordDark theme here: https://github.com/Weilbyte/PVEDiscordDark
-Create a new ZFS snapshot called `initconfig` after this script is complete.
+7. Create a new ZFS snapshot called `initconfig` after this script is complete.
