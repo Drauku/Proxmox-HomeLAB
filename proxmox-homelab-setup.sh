@@ -35,8 +35,8 @@ grep -n -B 1 'No valid sub' /usr/share/javascript/proxmox-widget-toolkit/proxmox
 
 
 ## install Dark Theme for the Proxmox web interface from Weilbyte
-wget https://raw.githubusercontent.com/Weilbyte/PVEDiscordDark/master/PVEDiscordDark.sh && bash PVEDiscordDark.sh install --silent
-echo; echo "Thanks to Weilbyte for creating the Proxmox-GUI Dark Theme: https://github.com/Weilbyte/PVEDiscordDark"
+#wget https://raw.githubusercontent.com/Weilbyte/PVEDiscordDark/master/PVEDiscordDark.sh && bash PVEDiscordDark.sh install --silent
+#echo; echo "Thanks to Weilbyte for creating the Proxmox-GUI Dark Theme: https://github.com/Weilbyte/PVEDiscordDark"
 
 
 ## create a ZFS snapshot labeled 'install'
