@@ -1,4 +1,6 @@
-## Consolidated setup scripts used to prepare a Proxmox installation for HomeLab use
+#!/bin/bash
+
+# Consolidated setup scripts used to prepare a Proxmox installation for HomeLab use
 # To run this script, download and execute on the target proxmox machine
 # wget https://raw.githubusercontent.com/Drauku/Proxmox-HomeLAB/proxmox-homelab-setup.sh && bash proxmox-homelab-setup.sh
 
@@ -7,7 +9,7 @@ echo "ZFS snapshot 'install' created as a checkpoint"
 
 
 ## add the 'pve-no-subscription' repository to sources.list
-echo "deb http://download.proxmox.com/debian/pve buster pve-no-subscription" >> /etc/apt/sources.list
+echo "deb http://download.proxmox.com/debian/pve $(cat /etc/*-release | grep CODENAME | head -n1 | cut -d '=' -f2) pve-no-subscription" >> /etc/apt/sources.list
 # echo "\etc\apt\sources.list updated with pve-no-subscription repository"
 
 
