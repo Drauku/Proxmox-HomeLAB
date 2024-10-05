@@ -158,5 +158,5 @@ create_template 924 "tmpl-ubuntu-24-04" "ubuntu-24.04-server-cloudimg-amd64.img"
 #RockyLinux 8
 
 #RockyLinux 9
-# img_url="https://download.rockylinux.org/pub/rocky/9.2/images/x86_64/Rocky-9-GenericCloud-Base-9.2-20230513.0.x86_64.qcow2"
-# create_template 949 "tmpl-rocky-9" "Rocky-9-GenericCloud-Base-9.2-20230513.0.x86_64.qcow2" $img_url
+img_url="https://download.rockylinux.org/pub/rocky/9.2/images/x86_64/Rocky-9-GenericCloud-Base-9.2-20230513.0.x86_64.qcow2"
+create_template 949 "tmpl-rocky-9" "Rocky-9-GenericCloud-Base-9.2-20230513.0.x86_64.qcow2" $img_url
