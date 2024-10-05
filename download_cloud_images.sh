@@ -48,7 +48,8 @@ function create_template() {
     if [[ -f "$vm_confs/$1.conf" ]]
     then echo "Template $vm_confs/$1 already exists, not creating."; return
     else
-        if [ $(webtest "$4") > 0 ] then
+        if [ $(webtest "$4") > 0 ]
+        then
             echo "No internet connection detected. Unable to download image, exiting."
             return
         fi
