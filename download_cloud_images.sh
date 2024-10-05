@@ -3,15 +3,40 @@
 # original script from https://www.apalrd.net/posts/2023/pve_cloud/
 
 #Path to your ssh authorized_keys file
-#Alternatively, use /etc/pve/priv/authorized_keys if you are already authorized
-#on the Proxmox system
-export ssh_keyfile=/root/id_rsa-homelan.pub
+# export ssh_keyfile=/root/id_rsa-homelan.pub
+export ssh_keyfile="~/.ssh/authorized_keys"
+#Alternatively, use /etc/pve/priv/authorized_keys if you are already authorized on the Proxmox system
+
 #Username to create on VM template
-export username=drauku
+export username="${1:-drauku}"
 
 #Name of your storage
 storage=$(pvesm status | awk '/local-/{print $1}')
-vmconfs="/etc/pve/qemu-server"
+vm_confs="/etc/pve/qemu-server"
+vm_image="/var/lib/vz/template/iso"
+
+#Check for internet connectivity:
+extract_domain(){
+    local s="$1"
+    s="${s/#*:\/\/}" # remove protocol
+    echo -n "${s/%+(:*|\/*)}" # remove path
+}
+
+webtest(){
+    debug=$2
+    [[ $debug > 0 ]] && echo "DEBUG: \$1 is '$1'"
+    if [ -z "$1" ]; then test="cloudflare.com"; else test="$1"; fi
+    [[ $debug > 0 ]] && echo "DEBUG: \$test is '$test'"
+    test_url="$(extract_domain $test)"
+    [[ $debug > 0 ]] && echo "DEBUG: \$test_url is '$test_url'"
+    if curl -sf -o /dev/null https://$test_url; then
+        # echo "connection with $test_url successful"
+        return 0
+    else
+        # echo "connection with $test_url > failed <"
+        return 1
+    fi
+}
 
 #Create template
 #args:
@@ -20,9 +45,18 @@ vmconfs="/etc/pve/qemu-server"
 # file name in the current directory
 function create_template() {
     #Check if the template already exists
-    if [[ -f "$vmconfs/$1.conf" ]]
-    then echo "Template $vmconfs/$1 already exists, not creating."; return
+    if [[ -f "$vm_confs/$1.conf" ]]
+    then echo "Template $vm_confs/$1 already exists, not creating."; return
     else
+        if [ $(webtest "$4") > 0 ] then
+            echo "No internet connection detected. Unable to download image, exiting."
+            return
+        fi
+        #Download the template image
+        # used to specify "prefix" directory for download path
+        # wget "$4" -P $vm_image
+        # no specified download path because image is removed after
+        wget "$4"
         #Print all of the configuration
         echo "Creating template $2 ($1)"
         #Create new VM
@@ -69,48 +103,51 @@ function create_template() {
 #Feel free to add your own
 
 ## Debian
-# #Buster (10)
-# wget "https://cloud.debian.org/images/cloud/buster/latest/debian-10-genericcloud-amd64.qcow2"
-# create_template 910 "tmpl-debian-10" "debian-10-genericcloud-amd64.qcow2"
-# #Bullseye (11)
-# wget "https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-genericcloud-amd64.qcow2"
-# create_template 911 "tmpl-debian-11" "debian-11-genericcloud-amd64.qcow2"
+##Buster (10)
+# img_url="https://cloud.debian.org/images/cloud/buster/latest/debian-10-genericcloud-amd64.qcow2"
+# create_template 910 "tmpl-debian-10" "debian-10-genericcloud-amd64.qcow2" $img_url
+##Bullseye (11)
+# img_url="https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-genericcloud-amd64.qcow2"
+# create_template 911 "tmpl-debian-11" "debian-11-genericcloud-amd64.qcow2" $img_url
 #Bookworm (12)
-wget "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
-create_template 912 "tmpl-debian-12" "debian-12-genericcloud-amd64.qcow2"
-# #Trixie hasn't started pushing dailies yet, but it will be template 913
-# #Sid (Unstable)
-# wget "https://cloud.debian.org/images/cloud/sid/daily/latest/debian-sid-genericcloud-amd64-daily.qcow2"
-# create_template 919 "tmpl-debian-sid" "debian-sid-genericcloud-amd64-daily.qcow2"
+img_url="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
+create_template 912 "tmpl-debian-12" "debian-12-genericcloud-amd64.qcow2" $img_url
+##Trixie hasn't started pushing dailies yet, but it will be template 913
+##Sid (Unstable)
+# img_url="https://cloud.debian.org/images/cloud/sid/daily/latest/debian-sid-genericcloud-amd64-daily.qcow2"
+# create_template 919 "tmpl-debian-sid" "debian-sid-genericcloud-amd64-daily.qcow2" $img_url
 
 ## Ubuntu
-# #20.04 (Focal Fossa)
-# wget "https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img"
-# create_template 920 "tmpl-ubuntu-20-04" "ubuntu-20.04-server-cloudimg-amd64.img"
+##20.04 (Focal Fossa)
+# img_url="https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img"
+# create_template 920 "tmpl-ubuntu-20-04" "ubuntu-20.04-server-cloudimg-amd64.img" $img_url
 #22.04 (Jammy Jellyfish)
-wget "https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img"
-create_template 922 "tmpl-ubuntu-22-04" "ubuntu-22.04-server-cloudimg-amd64.img"
-# #23.04 (Lunar Lobster) - daily builds
-# wget "https://cloud-images.ubuntu.com/lunar/current/lunar-server-cloudimg-amd64.img"
-# create_template 923 "tmpl-ubuntu-23-04-daily" "lunar-server-cloudimg-amd64.img"
+img_url="https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img"
+create_template 922 "tmpl-ubuntu-22-04" "ubuntu-22.04-server-cloudimg-amd64.img" $img_url
+##23.04 (Lunar Lobster) - daily builds
+# img_url="https://cloud-images.ubuntu.com/lunar/current/lunar-server-cloudimg-amd64.img"
+# create_template 923 "tmpl-ubuntu-23-04-daily" "lunar-server-cloudimg-amd64.img" $img_url
+##24.04 (Noble Numbat) - daily rlease build
+img_url="https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+create_template 924 "tmpl-ubuntu-24-04" "ubuntu-24.04-server-cloudimg-amd64.img" $img_url
 
 ## Fedora 37
-# #Image is compressed, so need to uncompress first
-# wget https://download.fedoraproject.org/pub/fedora/linux/releases/37/Cloud/x86_64/images/Fedora-Cloud-Base-37-1.7.x86_64.raw.xz
+##Image is compressed, so need to uncompress first
+# img_url="https://download.fedoraproject.org/pub/fedora/linux/releases/37/Cloud/x86_64/images/Fedora-Cloud-Base-37-1.7.x86_64.raw.xz"
 # xz -d -v Fedora-Cloud-Base-37-1.7.x86_64.raw.xz
-# create_template 937 "tmpl-fedora-37" "Fedora-Cloud-Base-37-1.7.x86_64.raw"
+# create_template 937 "tmpl-fedora-37" "Fedora-Cloud-Base-37-1.7.x86_64.raw" $img_url
 
 ## CentOS Stream
 #Stream 8
-wget https://cloud.centos.org/centos/8-stream/x86_64/images/CentOS-Stream-GenericCloud-8-20220913.0.x86_64.qcow2
-create_template 948 "tmpl-centos-8-stream" "CentOS-Stream-GenericCloud-8-20220913.0.x86_64.qcow2"
-# #Stream 9 (daily) - they don't have a 'latest' link?
-# wget https://cloud.centos.org/centos/9-stream/x86_64/images/CentOS-Stream-GenericCloud-9-20230123.0.x86_64.qcow2
-# create_template 949 "tmpl-centos-9-stream-daily" "CentOS-Stream-GenericCloud-9-20230123.0.x86_64.qcow2"
+# img_url="https://cloud.centos.org/centos/8-stream/x86_64/images/CentOS-Stream-GenericCloud-8-20220913.0.x86_64.qcow2"
+# create_template 948 "tmpl-centos-8-stream" "CentOS-Stream-GenericCloud-8-20220913.0.x86_64.qcow2" $img_url
+##Stream 9 (daily) - they don't have a 'latest' link?
+# img_url="https://cloud.centos.org/centos/9-stream/x86_64/images/CentOS-Stream-GenericCloud-9-20230123.0.x86_64.qcow2"
+# create_template 949 "tmpl-centos-9-stream-daily" "CentOS-Stream-GenericCloud-9-20230123.0.x86_64.qcow2" $img_url
 
 ## Rocky Linux
 #RockyLinux 8
 
 #RockyLinux 9
-wget https://download.rockylinux.org/pub/rocky/9.2/images/x86_64/Rocky-9-GenericCloud-Base-9.2-20230513.0.x86_64.qcow2
-create_template 949 "tmpl-rocky-9" "Rocky-9-GenericCloud-Base-9.2-20230513.0.x86_64.qcow2"
+# img_url="https://download.rockylinux.org/pub/rocky/9.2/images/x86_64/Rocky-9-GenericCloud-Base-9.2-20230513.0.x86_64.qcow2"
+# create_template 949 "tmpl-rocky-9" "Rocky-9-GenericCloud-Base-9.2-20230513.0.x86_64.qcow2" $img_url
