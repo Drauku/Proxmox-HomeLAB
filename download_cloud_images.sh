@@ -2,10 +2,13 @@
 
 # original script from https://www.apalrd.net/posts/2023/pve_cloud/
 
+## debug flag on/off
+debug(){ [ $debug -eq 1 ] && echo "DEBUG: $*" }
+
 #Path to your ssh authorized_keys file
 # export ssh_keyfile=/root/id_rsa-homelan.pub
-export ssh_keyfile="~/.ssh/authorized_keys"
 #Alternatively, use /etc/pve/priv/authorized_keys if you are already authorized on the Proxmox system
+export ssh_keyfile="/etc/pve/priv/authorized_keys"
 
 #Username to create on VM template
 export username="${1:-drauku}"
@@ -24,11 +27,11 @@ extract_domain(){
 
 webtest(){
     debug=$2
-    [[ $debug > 0 ]] && echo "DEBUG: \$1 is '$1'"
+    debug "\$1 is '$1'"
     if [ -z "$1" ]; then test="cloudflare.com"; else test="$1"; fi
-    [[ $debug > 0 ]] && echo "DEBUG: \$test is '$test'"
+    debug "\$test is '$test'"
     test_url="$(extract_domain $test)"
-    [[ $debug > 0 ]] && echo "DEBUG: \$test_url is '$test_url'"
+    debug "\$test_url is '$test_url'"
     if curl -sf -o /dev/null https://$test_url; then
         # echo "connection with $test_url successful"
         return 0
@@ -43,7 +46,7 @@ webtest(){
 # vm_id
 # vm_name
 # file name in the current directory
-function create_template() {
+create_template(){
     #Check if the template already exists
     if [[ -f "$vm_confs/$1.conf" ]]
     then echo "Template $vm_confs/$1 already exists, not creating."; return
@@ -57,46 +60,51 @@ function create_template() {
         # used to specify "prefix" directory for download path
         # wget "$4" -P $vm_image
         # no specified download path because image is removed after
-        wget "$4"
-        #Print all of the configuration
-        echo "Creating template $2 ($1)"
-        #Create new VM
-        #Feel free to change any of these to your liking
-        qm create $1 --name $2 --ostype l26
-        #Set networking to default bridge
-        qm set $1 --net0 virtio,bridge=vmbr0
-        #Set display to serial
-        qm set $1 --serial0 socket --vga serial0
-        #Set memory, cpu, type defaults
-        #If you are in a cluster, you might need to change cpu type
-        qm set $1 --memory 1024 --cores 2 --cpu x86-64-v2-AES
-        #Set boot device to new file
-        qm set $1 --scsi0 ${storage}:0,import-from="$(pwd)/$3",discard=on
-        #Set scsi hardware as default boot disk using virtio scsi single
-        qm set $1 --boot order=scsi0 --scsihw virtio-scsi-single
-        #Enable Qemu guest agent in case the guest has it available
-        qm set $1 --agent enabled=1,fstrim_cloned_disks=1
-        #Add cloud-init device
-        qm set $1 --ide2 ${storage}:cloudinit
-        #Set CI ip config
-        #IP6 = auto means SLAAC (a reliable default with no bad effects on non-IPv6 networks)
-        #IP = DHCP means what it says, so leave that out entirely on non-IPv4 networks to avoid DHCP delays
-        qm set $1 --ipconfig0 "ip6=auto,ip=dhcp"
-        #Import the ssh keyfile
-        qm set $1 --sshkeys ${ssh_keyfile}
-        #If you want to do password-based auth instaed
-        #Then use this option and comment out the line above
-        #qm set $1 --cipassword password
-        #Add the user
-        qm set $1 --ciuser ${username}
-        #Resize the disk to 8G, a reasonable minimum. You can expand it more later.
-        #If the disk is already bigger than 8G, this will fail, and that is okay.
-        qm disk resize $1 scsi0 8G
-        #Make it a template
-        qm template $1
+        if wget "$4"
+        then
+            #Print all of the configuration
+            echo "Creating template $2 ($1)"
+            #Create new VM
+            #Feel free to change any of these to your liking
+            qm create $1 --name $2 --ostype l26
+            #Set networking to default bridge
+            qm set $1 --net0 virtio,bridge=vmbr0
+            #Set display to serial
+            qm set $1 --serial0 socket --vga serial0
+            #Set memory, cpu, type defaults
+            #If you are in a cluster, you might need to change cpu type
+            qm set $1 --memory 1024 --cores 2 --cpu x86-64-v2-AES
+            #Set boot device to new file
+            qm set $1 --scsi0 ${storage}:0,import-from="$(pwd)/$3",discard=on
+            #Set scsi hardware as default boot disk using virtio scsi single
+            qm set $1 --boot order=scsi0 --scsihw virtio-scsi-single
+            #Enable Qemu guest agent in case the guest has it available
+            qm set $1 --agent enabled=1,fstrim_cloned_disks=1
+            #Add cloud-init device
+            qm set $1 --ide2 ${storage}:cloudinit
+            #Set CI ip config
+            #IP6 = auto means SLAAC (a reliable default with no bad effects on non-IPv6 networks)
+            #IP = DHCP means what it says, so leave that out entirely on non-IPv4 networks to avoid DHCP delays
+            qm set $1 --ipconfig0 "ip6=auto,ip=dhcp"
+            #Import the ssh keyfile
+            qm set $1 --sshkeys ${ssh_keyfile}
+            #If you want to do password-based auth instaed
+            #Then use this option and comment out the line above
+            #qm set $1 --cipassword password
+            #Add the user
+            qm set $1 --ciuser ${username}
+            #Resize the disk to 8G, a reasonable minimum. You can expand it more later.
+            #If the disk is already bigger than 8G, this will fail, and that is okay.
+            qm disk resize $1 scsi0 8G
+            #Make it a template
+            qm template $1
 
-        #Remove file when done
-        rm $3
+            #Remove file when done
+            rm $3
+        else
+            echo "Image download failed. Exiting."
+            return
+        fi
     fi
 }
 
