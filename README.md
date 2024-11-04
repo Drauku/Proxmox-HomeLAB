@@ -1,6 +1,14 @@
 # Proxmox-HomeLAB
 Proxmox HomeLAB environment, consolidated configuration scripts.
 
+**NOTE**: This repository should not be used, instead check out the communuty run Helper-Scripts here: 
+ 
+ https://github.com/community-scripts/ProxmoxVE or https://helper-scripts.com/
+ 
+ Thank you, tteck, for starting something amazing.
+
+Obsolete content:
+
 - **WARNING**: Do not run this script unless you understand what each line does.
 - **NOTE**: I am not responsible for anything that might happen to your systdem as a result of this script.
 - **NOTE**: This script is built to run on Proxmox 6.x versions, i.e. the "buster" codename.
