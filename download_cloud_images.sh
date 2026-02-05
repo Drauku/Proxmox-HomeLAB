@@ -51,7 +51,7 @@ create_template(){
     if [[ -f "$vm_confs/$1.conf" ]]
     then echo "Template $vm_confs/$1 already exists, not creating."; return
     else
-        if [ $(webtest "$4") > 0 ]
+        if ! webtest "$4"
         then
             echo "No internet connection detected. Unable to download image, exiting."
             return
@@ -88,7 +88,7 @@ create_template(){
             qm set $1 --ipconfig0 "ip6=auto,ip=dhcp"
             #Import the ssh keyfile
             qm set $1 --sshkeys "${ssh_keyfile}"
-            #If you want to do password-based auth instaed
+            #If you want to do password-based auth instead
             #Then use this option and comment out the line above
             #qm set $1 --cipassword password
             #Add the user
@@ -100,7 +100,7 @@ create_template(){
             qm template $1
 
             #Remove file when done
-            rm $3
+            # rm $3
         else
             echo "Image download failed. Exiting."
             return
