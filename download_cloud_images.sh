@@ -121,7 +121,9 @@ create_template(){
 #Bookworm (12)
 img_url="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
 create_template 912 "tmpl-debian-12" "debian-12-genericcloud-amd64.qcow2" "$img_url"
-##Trixie hasn't started pushing dailies yet, but it will be template 913
+#Bookworm (12)
+img_url="https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
+create_template 913 "tmpl-debian-12" "debian-13-genericcloud-amd64.qcow2" "$img_url"
 ##Sid (Unstable)
 # img_url="https://cloud.debian.org/images/cloud/sid/daily/latest/debian-sid-genericcloud-amd64-daily.qcow2"
 # create_template 919 "tmpl-debian-sid" "debian-sid-genericcloud-amd64-daily.qcow2" "$img_url"
@@ -131,9 +133,9 @@ create_template 912 "tmpl-debian-12" "debian-12-genericcloud-amd64.qcow2" "$img_
 # img_url="https://cloud-images.ubuntu.com/releases/focal/release/ubuntu-20.04-server-cloudimg-amd64.img"
 # create_template 920 "tmpl-ubuntu-20-04" "ubuntu-20.04-server-cloudimg-amd64.img" "$img_url"
 #22.04 (Jammy Jellyfish)
-img_url="https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img"
-create_template 922 "tmpl-ubuntu-22-04" "ubuntu-22.04-server-cloudimg-amd64.img" "$img_url"
-##23.04 (Lunar Lobster) - daily builds
+# img_url="https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img"
+# create_template 922 "tmpl-ubuntu-22-04" "ubuntu-22.04-server-cloudimg-amd64.img" "$img_url"
+# ##23.04 (Lunar Lobster) - daily builds
 # img_url="https://cloud-images.ubuntu.com/lunar/current/lunar-server-cloudimg-amd64.img"
 # create_template 923 "tmpl-ubuntu-23-04-daily" "lunar-server-cloudimg-amd64.img" "$img_url"
 ##24.04 (Noble Numbat) - daily rlease build
@@ -158,5 +160,5 @@ create_template 924 "tmpl-ubuntu-24-04" "ubuntu-24.04-server-cloudimg-amd64.img"
 #RockyLinux 8
 
 #RockyLinux 9
-img_url="https://download.rockylinux.org/pub/rocky/9.2/images/x86_64/Rocky-9-GenericCloud-Base-9.2-20230513.0.x86_64.qcow2"
-create_template 949 "tmpl-rocky-9" "Rocky-9-GenericCloud-Base-9.2-20230513.0.x86_64.qcow2" "$img_url"
+# img_url="https://download.rockylinux.org/pub/rocky/9.2/images/x86_64/Rocky-9-GenericCloud-Base-9.2-20230513.0.x86_64.qcow2"
+# create_template 949 "tmpl-rocky-9" "Rocky-9-GenericCloud-Base-9.2-20230513.0.x86_64.qcow2" "$img_url"
