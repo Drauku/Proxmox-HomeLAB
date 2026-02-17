@@ -1,0 +1,14 @@
+# Environment variables and secrets
+.env
+*.env
+secrets.txt
+
+# Shell script history
+.bash_history
+
+# Log files
+*.log
+
+# Backup files created by editors (like the .bak files from sed)
+*.bak
+*~
