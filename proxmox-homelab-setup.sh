@@ -71,15 +71,27 @@ if [[ "$choice" =~ ^[Yy]$ ]]; then
         source .env
         set +a
     fi
-    # Check for any missing variables and prompt for them if needed
-    [ -z "$PXBS_STORAGE_ID" ] && read -pr "Enter a local Storage ID for PXBS (e.g., 'pXbs-main'): " PXBS_STORAGE_ID
-    [ -z "$PXBS_ADDRESS" ] && read -pr "Enter PXBS Address (IP or hostname): " PXBS_ADDRESS
-    [ -z "$PXBS_USERNAME" ] && read -pr "Enter PXBS Username (e.g., backup-user@pXbs): " PXBS_USER
-    [ -z "$PXBS_PASSWORD" ] && { read -spr "Enter PXBS Password: " PXBS_PASSWORD; echo; }
-    [ -z "$PXBS_DATASTORE" ] && read -pr "Enter PXBS Datastore name on the server: " PXBS_DATASTORE
-    [ -z "$PXBS_FINGERPRINT" ] && read -pr "Enter PXBS Certificate Fingerprint: " PXBS_FINGERPRINT
+    # For each variable, check if it's set. If not, prompt for it.
+    if [ -z "$PXBS_STORAGE_ID" ]; then
+        read -p "Enter a local Storage ID for PXBS (e.g., 'pbs-main'): " PXBS_STORAGE_ID
+    fi
+    if [ -z "$PXBS_ADDRESS" ]; then
+        read -p "Enter PXBS Address (IP or hostname): " PXBS_ADDRESS
+    fi
+    if [ -z "$PXBS_USERNAME" ]; then
+        read -p "Enter PXBS Username (e.g., backup-user@pbs): " PXBS_USERNAME
+    fi
+    if [ -z "$PXBS_PASSWORD" ]; then
+        read -s -p "Enter PXBS Password: " PXBS_PASSWORD
+    fi
+    if [ -z "$PXBS_DATASTORE" ]; then
+        read -p "Enter PXBS Datastore name on the server: " PXBS_DATASTORE
+    fi
+    if [ -z "$PXBS_FINGERPRINT" ]; then
+        read -p "Enter PXBS Certificate Fingerprint: " PXBS_FINGERPRINT
+    fi
     echo "Adding PXBS storage to Proxmox VE..."
-    pvesm add pXbs "$PXBS_STORAGE_ID" --server "$PXBS_ADDRESS" --datastore "$PXBS_DATASTORE" \
+    pvesm add pbs "$PXBS_STORAGE_ID" --server "$PXBS_ADDRESS" --datastore "$PXBS_DATASTORE" \
         --username "$PXBS_USERNAME" --password "$PXBS_PASSWORD" --fingerprint "$PXBS_FINGERPRINT"
     if [ $? -eq 0 ]; then
         echo "Successfully added Proxmox Backup Server storage '$PXBS_STORAGE_ID'."
