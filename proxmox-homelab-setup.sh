@@ -4,53 +4,84 @@
 # To run this script, download and execute on the target proxmox machine
 # wget https://raw.githubusercontent.com/Drauku/Proxmox-HomeLAB/proxmox-homelab-setup.sh && bash proxmox-homelab-setup.sh
 
-# Check if the root filesystem is ZFS
+# Function to remove duplicate lines from a file while preserving order
+cleanup_duplicates() {
+    if [ -f "$1" ]; then
+        awk '!seen[$0]++' "$1" > "$1.tmp" && mv "$1.tmp" "$1"
+    fi
+}
+
+# Check if the root filesystem is ZFS, create "install" snapshot if it is
 if df -T / | grep -q 'zfs'; then
     echo "ZFS filesystem detected. Creating `rpool@install` snapshot."
     zfs snapshot rpool@install
 fi
 
-## add the 'pve-no-subscription' repository to sources.list
-echo "deb http://download.proxmox.com/debian/pve $(cat /etc/*-release | grep CODENAME | head -n1 | cut -d '=' -f2) pve-no-subscription" >> /etc/apt/sources.list
-# echo "\etc\apt\sources.list updated with pve-no-subscription repository"
+# Add the PVE no-subscription repository, but only if it's not already present.
+# This prevents duplicate entries if the script is run multiple times.
+CODENAME=$(cat /etc/*-release | grep CODENAME | head -n1 | cut -d '=' -f2)
+REPO_LINE="deb http://download.proxmox.com/debian/pve $CODENAME pve-no-subscription"
+if ! grep -qF "$REPO_LINE" /etc/apt/sources.list; then
+    echo "$REPO_LINE" >> /etc/apt/sources.list
+    echo "PVE no-subscription repository added."
+else
+    echo "PVE no-subscription repository already configured."
+fi
 
-## disable the enterprise repository source files
+# Disable enterprise repositories to prevent '401 Unauthorized' errors.
 if [ -f /etc/apt/sources.list.d/pve-enterprise.list ]; then
     sed -i 's/^deb/#&/' /etc/apt/sources.list.d/pve-enterprise.list
     echo "pve-enterprise.list disabled."
 fi
 if [ -f /etc/apt/sources.list.d/ceph.list ]; then
-    sed -i 's/^deb/#&/' /etc/apt/sources.list.d/ceph.list
-    echo "ceph.list disabled."
+    # Only comment out enterprise ceph repos
+    if grep -q "enterprise.proxmox.com" /etc/apt/sources.list.d/ceph.list; then
+        sed -i 's/^deb/#&/' /etc/apt/sources.list.d/ceph.list
+        echo "Ceph enterprise repository disabled."
+    fi
+fi
+
+# Check for and clean up duplicate entries from all sources lists
+FOUND_DUPES=false
+for f in "/etc/apt/sources.list" /etc/apt/sources.list.d/*.list; do
+    if [ -f "$f" ]; then
+        # If awk exits with non-zero status, duplicates were found.
+        if ! awk 'seen[$0]++{exit 1}' "$f"; then
+            FOUND_DUPES=true
+            break # Exit the loop as soon as we find any duplicates
+        fi
+    fi
+done
+
+if [ "$FOUND_DUPES" = true ]; then
+    echo "Duplicate repository entries found. Cleaning up..."
+    cleanup_duplicates "/etc/apt/sources.list"
+    for f in /etc/apt/sources.list.d/*.list; do
+        cleanup_duplicates "$f"
+    done
+else
+    echo "No duplicate repository entries found."
 fi
 
 ## update and upgrade the Proxmox installation
 apt update -y && apt upgrade -y && apt dist-upgrade -y
 
-## disable the Proxmox Subscription Notice with retry logic
+# --- UI Tweaks ---
+# Disable the Proxmox Subscription Notice
 NAG_FILE="/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js"
-SUCCESS=false
-for i in 1 2; do
-    sed -Ezi.bak "s/(Ext.Msg.show\(\{\s+title: gettext\('No valid sub)/void\(\{ \/\/\1/g" "$NAG_FILE"
-    if grep -q "void({ //Ext.Msg.show" "$NAG_FILE"; then
-        SUCCESS=true
-        break
+if [ -f "$NAG_FILE" ]; then
+    if ! grep -q "void({ //Ext.Msg.show" "$NAG_FILE"; then
+        echo "Disabling subscription nag..."
+        sed -Ezi.bak "s/(Ext.Msg.show\(\{\s+title: gettext\('No valid sub)/void\(\{ \/\/\1/g" "$NAG_FILE"
+        systemctl restart pveproxy.service
+        echo "A backup of the original file was created at ${NAG_FILE}.bak"
+    else
+        echo "Subscription nag already disabled."
     fi
-    if [ "$i" -eq 1 ] && [ "$SUCCESS" -eq false ]; then
-        sleep 1
-    fi
-done
-# Final action based on the outcome
-if [ "$SUCCESS" = true ]; then
-    echo "Subscription nag disabled successfully."
-    systemctl restart pveproxy.service
-    echo "Verification:"
-    grep -n -B 1 'No valid sub' "$NAG_FILE"
 else
-    echo "ERROR: Failed to disable the subscription nag after two attempts."
-    echo "The file '$NAG_FILE' may have changed, preventing the script from modifying it."
-    echo "A backup of the original file was created at ${NAG_FILE}.bak"
+    echo "INFO: Subscription nag file not found, skipping."
 fi
+
 # Credit goes to https://johnscs.com/remove-proxmox51-subscription-notice for the `sed` and `grep` scripts just above
 
 # to revert this change, run the below command to reinstall from the repository
@@ -60,45 +91,25 @@ fi
 #wget https://raw.githubusercontent.com/Weilbyte/PVEDiscordDark/master/PVEDiscordDark.sh && bash PVEDiscordDark.sh install --silent
 #echo; echo "Thanks to Weilbyte for creating the Proxmox-GUI Dark Theme: https://github.com/Weilbyte/PVEDiscordDark"
 
-## create a ZFS snapshot labeled 'initconfig'
-if df -T / | grep -q 'zfs'; then
-    zfs snapshot rpool@initconfig
-    echo; echo "ZFS snapshot 'initconfig' created as a checkpoint"
-fi
-
-## --- Proxmox Backup Server (PXBS) Integration ---
+# --- Proxmox Backup Server (PXBS) Integration ---
 echo
-read -pr "Do you want to configure a Proxmox Backup Server? (y/N): " choice < /dev/tty
+echo -n "Do you want to configure a Proxmox Backup Server? (y/N): "
+read -r choice < /dev/tty
 if [[ "$choice" =~ ^[Yy]$ ]]; then
-    # Source .env file if it exists
     if [ -f ".env" ]; then
         echo "Found .env file, loading variables..."
-        set -a
-        source .env
-        set +a
+        set -a; source .env; set +a
     fi
-    # For each variable, check if it's set. If not, prompt for it.
-    if [ -z "$PXBS_STORAGE_ID" ]; then
-        read -pr "Enter a local Storage ID for PXBS (e.g., 'pbs-main'): " PXBS_STORAGE_ID < /dev/tty
-    fi
-    if [ -z "$PXBS_ADDRESS" ]; then
-        read -pr "Enter PXBS Address (IP or hostname): " PXBS_ADDRESS < /dev/tty
-    fi
-    if [ -z "$PXBS_USERNAME" ]; then
-        read -pr "Enter PXBS Username (e.g., backup-user@pbs): " PXBS_USERNAME < /dev/tty
-    fi
-    if [ -z "$PXBS_PASSWORD" ]; then
-        read -s -pr "Enter PXBS Password: " PXBS_PASSWORD < /dev/tty
-        echo
-    fi
-    if [ -z "$PXBS_DATASTORE" ]; then
-        read -rp "Enter PXBS Datastore name on the server: " PXBS_DATASTORE < /dev/tty
-    fi
-    if [ -z "$PXBS_FINGERPRINT" ]; then
-        read -pr "Enter PXBS Certificate Fingerprint: " PXBS_FINGERPRINT < /dev/tty
-    fi
+
+    [[ -z "$PXBS_STORAGE_ID" ]] && echo -n "Enter a local Storage ID for PXBS (e.g., 'pbs-main'): " && read -r PXBS_STORAGE_ID < /dev/tty
+    [[ -z "$PXBS_ADDRESS" ]] && echo -n "Enter PXBS Address (IP or hostname): " && read -r PXBS_ADDRESS < /dev/tty
+    [[ -z "$PXBS_USERNAME" ]] && echo -n "Enter PXBS Username (e.g., backup-user@pbs): " && read -r PXBS_USERNAME < /dev/tty
+    [[ -z "$PXBS_PASSWORD" ]] && echo -n "Enter PXBS Password: " && read -r PXBS_PASSWORD < /dev/tty
+    [[ -z "$PXBS_DATASTORE" ]] && echo -n "Enter PXBS Datastore name on the server: " && read -r PXBS_DATASTORE < /dev/tty
+    [[ -z "$PXBS_FINGERPRINT" ]] && echo -n "Enter PXBS Certificate Fingerprint: " && read -r PXBS_FINGERPRINT < /dev/tty
+
     echo "Adding PXBS storage to Proxmox VE..."
-    pvesm add pbs "$PXBS_STORAGE_ID" --server "$PXBS_ADDRESS" --datastore "$PXBS_DATASTORE" \
+    pvesm add pbs "$PXBS_STORAGE_ID" --server "$PXBS_ADDRESS" --datastore "$PXBS_DATASTORE"
         --username "$PXBS_USERNAME" --password "$PXBS_PASSWORD" --fingerprint "$PXBS_FINGERPRINT"
     if [ $? -eq 0 ]; then
         echo "Successfully added Proxmox Backup Server storage '$PXBS_STORAGE_ID'."
@@ -107,7 +118,13 @@ if [[ "$choice" =~ ^[Yy]$ ]]; then
     fi
 fi
 
-## final message and reminder
+## create a ZFS snapshot labeled 'initconfig'
+if df -T / | grep -q 'zfs'; then
+    zfs snapshot rpool@initconfig
+    echo; echo "ZFS snapshot 'initconfig' created as a checkpoint"
+fi
+
+## outro and reminder
 echo
 echo "Proxmox has been configured for HOBBY-USE IN A NON-COMMERCIAL (HOME) ENVIRONMENT."
 echo "Please consider purchasing a support subscription to the Proxmox project."
@@ -116,7 +133,8 @@ echo
 
 ## reboot the system to start fresh
 echo
-read -pr "Some of these changes might benefit from a reboot. Do you want to reboot now? (y/N): " choice < /dev/tty
+echo -n "Some of these changes might benefit from a reboot. Do you want to reboot now? (y/N): "
+read -r choice < /dev/tty
 if [[ "$choice" =~ ^[Yy]$ ]]; then
     reboot
 fi
