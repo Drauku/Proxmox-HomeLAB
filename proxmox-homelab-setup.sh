@@ -14,9 +14,15 @@ fi
 echo "deb http://download.proxmox.com/debian/pve $(cat /etc/*-release | grep CODENAME | head -n1 | cut -d '=' -f2) pve-no-subscription" >> /etc/apt/sources.list
 # echo "\etc\apt\sources.list updated with pve-no-subscription repository"
 
-## disable the enterprise repository source file
-sed -zi '/^deb/s//#&/' /etc/apt/sources.list.d/pve-enterprise.list
-# echo "\etc\apt\sources.list.d\pve-enterprise.list renamed so it is not used"
+## disable the enterprise repository source files
+if [ -f /etc/apt/sources.list.d/pve-enterprise.list ]; then
+    sed -i 's/^deb/#&/' /etc/apt/sources.list.d/pve-enterprise.list
+    echo "pve-enterprise.list disabled."
+fi
+if [ -f /etc/apt/sources.list.d/ceph.list ]; then
+    sed -i 's/^deb/#&/' /etc/apt/sources.list.d/ceph.list
+    echo "ceph.list disabled."
+fi
 
 ## update and upgrade the Proxmox installation
 apt update -y && apt upgrade -y && apt dist-upgrade -y
@@ -62,7 +68,7 @@ fi
 
 ## --- Proxmox Backup Server (PXBS) Integration ---
 echo
-read -p "Do you want to configure a Proxmox Backup Server? (y/N): " choice
+read -pr "Do you want to configure a Proxmox Backup Server? (y/N): " choice < /dev/tty
 if [[ "$choice" =~ ^[Yy]$ ]]; then
     # Source .env file if it exists
     if [ -f ".env" ]; then
@@ -73,22 +79,23 @@ if [[ "$choice" =~ ^[Yy]$ ]]; then
     fi
     # For each variable, check if it's set. If not, prompt for it.
     if [ -z "$PXBS_STORAGE_ID" ]; then
-        read -p "Enter a local Storage ID for PXBS (e.g., 'pbs-main'): " PXBS_STORAGE_ID
+        read -pr "Enter a local Storage ID for PXBS (e.g., 'pbs-main'): " PXBS_STORAGE_ID < /dev/tty
     fi
     if [ -z "$PXBS_ADDRESS" ]; then
-        read -p "Enter PXBS Address (IP or hostname): " PXBS_ADDRESS
+        read -pr "Enter PXBS Address (IP or hostname): " PXBS_ADDRESS < /dev/tty
     fi
     if [ -z "$PXBS_USERNAME" ]; then
-        read -p "Enter PXBS Username (e.g., backup-user@pbs): " PXBS_USERNAME
+        read -pr "Enter PXBS Username (e.g., backup-user@pbs): " PXBS_USERNAME < /dev/tty
     fi
     if [ -z "$PXBS_PASSWORD" ]; then
-        read -s -p "Enter PXBS Password: " PXBS_PASSWORD
+        read -s -pr "Enter PXBS Password: " PXBS_PASSWORD < /dev/tty
+        echo
     fi
     if [ -z "$PXBS_DATASTORE" ]; then
-        read -p "Enter PXBS Datastore name on the server: " PXBS_DATASTORE
+        read -rp "Enter PXBS Datastore name on the server: " PXBS_DATASTORE < /dev/tty
     fi
     if [ -z "$PXBS_FINGERPRINT" ]; then
-        read -p "Enter PXBS Certificate Fingerprint: " PXBS_FINGERPRINT
+        read -pr "Enter PXBS Certificate Fingerprint: " PXBS_FINGERPRINT < /dev/tty
     fi
     echo "Adding PXBS storage to Proxmox VE..."
     pvesm add pbs "$PXBS_STORAGE_ID" --server "$PXBS_ADDRESS" --datastore "$PXBS_DATASTORE" \
@@ -109,7 +116,7 @@ echo
 
 ## reboot the system to start fresh
 echo
-read -p "Some of these changes might benefit from a reboot. Do you want to reboot now? (y/N): " choice
+read -pr "Some of these changes might benefit from a reboot. Do you want to reboot now? (y/N): " choice < /dev/tty
 if [[ "$choice" =~ ^[Yy]$ ]]; then
     reboot
 fi

@@ -15,11 +15,13 @@ Obsolete content:
 * SETUP: run this bash command in the terminal of a new (freshly installed) Proxmox node:
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/Drauku/Proxmox-HomeLAB/main/download_cloud_images.sh | bash
+wget -qO- https://raw.githubusercontent.com/Drauku/Proxmox-HomeLAB/main/proxmox-homelab-setup.sh | bash
 ```
 
+* IMAGES: run the below command on a Proxmox node to download and create cloud images:
+
 ```bash
-wget -qO- https://raw.githubusercontent.com/Drauku/Proxmox-HomeLAB/main/proxmox-homelab-setup.sh | bash
+wget -qO- https://raw.githubusercontent.com/Drauku/Proxmox-HomeLAB/main/download_cloud_images.sh | bash
 ```
 
 Operations in the script:
