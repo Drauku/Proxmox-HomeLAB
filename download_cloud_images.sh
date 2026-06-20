@@ -15,10 +15,6 @@ storage=$(pvesm status | awk '/local-/{print $1; exit}')
 vm_confs="/etc/pve/qemu-server"
 vm_image="/var/lib/vz/template/iso"
 
-# Safer default than forcing serial0 for every image.
-# Proxmox documents serial0/vga serial0 as useful for many cloud images,
-# but explicitly says to switch back to the default display if an image
-# does not work with it. Fedora users have hit that exact issue.
 DEFAULT_VGA="default"
 DEFAULT_SERIAL="socket"
 
@@ -27,7 +23,7 @@ DEFAULT_SERIAL="socket"
 # URL/checksum are resolved at runtime whenever practical.
 distros=(
     "debian;9013;tmpl-debian-12;debian-12.qcow2;debian"
-    "ubuntu;9024;tmpl-ubuntu-24-04;ubuntu-24-04.img;ubuntu"
+    "ubuntu;9026;tmpl-ubuntu-26-04;ubuntu-26-04.img;ubuntu"
     "rocky;9110;tmpl-rocky-10;rocky-10.qcow2;rocky"
     "coreos;9123;tmpl-coreos-stable;coreos.qcow2.xz;coreos"
     "fedora;9144;tmpl-fedora-latest;fedora-latest.qcow2;fedora"
@@ -75,8 +71,17 @@ resolve_debian() {
 }
 
 resolve_ubuntu() {
-    RESOLVED_URL="https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
-    RESOLVED_SUM="https://cloud-images.ubuntu.com/noble/current/SHA256SUMS"
+    local base html
+    base="https://cloud-images.ubuntu.com/releases/resolute/release/"
+    html=$(curl -fsSL "$base") || return 1
+
+    if printf '%s' "$html" | grep -q 'ubuntu-26.04-server-cloudimg-amd64.img'; then
+        RESOLVED_URL="${base}ubuntu-26.04-server-cloudimg-amd64.img"
+        RESOLVED_SUM="${base}SHA256SUMS"
+    else
+        RESOLVED_URL="https://cloud-images.ubuntu.com/releases/plucky/release/ubuntu-25.04-server-cloudimg-amd64.img"
+        RESOLVED_SUM="https://cloud-images.ubuntu.com/releases/plucky/release/SHA256SUMS"
+    fi
 }
 
 resolve_rocky() {
@@ -114,7 +119,7 @@ resolve_arch() {
 }
 
 resolve_alpine() {
-    local index file sum
+    local index file
     index=$(curl -fsSL "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/cloud/") || return 1
     file=$(printf '%s' "$index" | grep -oE 'nocloud_alpine-virt-[0-9.]+-x86_64-bios-cloudinit-r[0-9]+\.qcow2' | sort -V | tail -n1)
     [[ -z "$file" ]] && return 1
@@ -151,42 +156,61 @@ confirm_template() {
 
     echo ""
     echo "${ylw}Ready to create template:${rst} $distro_name"
-    echo "  VMID:     $vmid"
-    echo "  Name:     $name"
-    echo "  Image:    $image"
-    echo "  URL:      $url"
+    echo "  VMID:  $vmid"
+    echo "  Name:  $name"
+    echo "  Image: $image"
+    echo "  URL:   $url"
     while true; do
         read -r -p "Approve this template task? (Y/n): " choice
         case "$choice" in
-        ''|y|Y) return 0 ;;
-        n|N) echo "${ylw}Skipped $distro_name by user choice.${rst}"; return 1 ;;
-        *) echo "Please answer Y or n." ;;
+            ''|y|Y) return 0 ;;
+            n|N) echo "${ylw}Skipped $distro_name by user choice.${rst}"; return 1 ;;
+            *) echo "Please answer Y or n." ;;
         esac
     done
-    }
+}
 
 verify_checksum() {
-    local file="$1"
-    local input="${2:-}"
+    local file input source_name expected_sum
+    file="$1"
+    input="${2:-}"
+    source_name="${3:-$(basename "$file")}"
+    expected_sum=""
+
     [[ -z "$input" ]] && echo "${ylw}No checksum provided. Skipping verification.${rst}" && return 0
 
-    local expected_sum=""
     if [[ "$input" =~ ^https?:// ]]; then
         echo "Fetching checksum file from remote..."
-        local sum_file filename match
+        local sum_file match
         sum_file=$(mktemp)
+
         if ! wget -q "$input" -O "$sum_file"; then
             echo "${red}Failed to download checksum file.${rst}"
             rm -f "$sum_file"
             return 1
         fi
-        filename=$(basename "$file")
-        match=$(grep -F "$filename" "$sum_file" | head -n1)
+
+        match=$(grep -F "$source_name" "$sum_file" | head -n1)
+
+        if [[ -z "$match" ]]; then
+            match=$(grep -F "$(basename "$source_name")" "$sum_file" | head -n1)
+        fi
+
+        if [[ -z "$match" && "$source_name" != "$(basename "$file")" ]]; then
+            match=$(grep -F "$(basename "$file")" "$sum_file" | head -n1)
+        fi
+
         if [[ -z "$match" ]]; then
             match=$(awk 'NF==1 {print $1}' "$sum_file" | head -n1)
         fi
+
         rm -f "$sum_file"
-        [[ -z "$match" ]] && echo "${red}Checksum entry not found for $filename.${rst}" && return 1
+
+        if [[ -z "$match" ]]; then
+            echo "${red}Checksum entry not found for $source_name.${rst}"
+            return 1
+        fi
+
         if [[ "$match" == *" = "* ]]; then
             expected_sum=$(echo "$match" | awk -F ' = ' '{print $2}')
         else
@@ -198,7 +222,7 @@ verify_checksum() {
 
     local cmd=""
     case ${#expected_sum} in
-        64)  cmd="sha256sum" ;;
+        64) cmd="sha256sum" ;;
         128) cmd="sha512sum" ;;
         *) echo "${ylw}Unknown hash length (${#expected_sum}). Skipping.${rst}"; return 0 ;;
     esac
@@ -218,11 +242,17 @@ create_template() {
     local image="$3"
     local url="$4"
     local csum="${5:-}"
+    local source_name
     local max_attempts=3
     local attempt=1
     local success=false
 
-    if ! manage_existing "$vmid"; then return 0; fi
+    source_name=$(basename "$url")
+
+    if ! manage_existing "$vmid"; then
+        return 0
+    fi
+
     if ! webtest; then
         echo "${red}CRITICAL${rst}: DNS resolution or internet failure."
         return 1
@@ -234,7 +264,7 @@ create_template() {
     while (( attempt <= max_attempts )); do
         echo "Attempt $attempt of $max_attempts: Downloading $image..."
         if wget -q --show-progress "$url" -O "$image"; then
-            if verify_checksum "$image" "$csum"; then
+            if verify_checksum "$image" "$csum" "$source_name"; then
                 success=true
                 break
             else
