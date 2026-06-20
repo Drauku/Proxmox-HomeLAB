@@ -1,147 +1,172 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-### CONFIG
-VENV_DIR="$HOME/vllm-env"
-SYSTEMD_UNIT_DIR="$HOME/.config/systemd/user"
-SERVICE_NAME="vllm-server.service"
-SERVICE_PORT="8000"
-# Default model (edit this later to whatever HF repo you like)
-DEFAULT_MODEL="meta-llama/Llama-3.1-8B-Instruct"
+VENV_DIR="${VENV_DIR:-$HOME/vllm-env}"
+SYSTEMD_UNIT_DIR="${SYSTEMD_UNIT_DIR:-$HOME/.config/systemd/user}"
+SERVICE_NAME="${SERVICE_NAME:-vllm-server.service}"
+SERVICE_PORT="${SERVICE_PORT:-8000}"
+DEFAULT_MODEL="${DEFAULT_MODEL:-meta-llama/Llama-3.1-8B-Instruct}"
+HOST="${HOST:-0.0.0.0}"
 
-echo "[*] Checking for NVIDIA driver..."
-if ! command -v nvidia-smi >/dev/null 2>&1; then
-  echo "[-] nvidia-smi not found. Please run llamacpp-install.sh (or otherwise install driver/CUDA) first."
-  exit 1
-fi
+log() { printf '[*] %s\n' "$*"; }
+warn() { printf '[!] %s\n' "$*"; }
+die() { printf '[-] %s\n' "$*" >&2; exit 1; }
 
-echo "[*] nvidia-smi output:"
-nvidia-smi || true
+require_cmd() { command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"; }
 
-CUDA_DRIVER_VER=$(nvidia-smi | awk '/CUDA Version:/ {print $NF; exit}')
-if [[ -z "${CUDA_DRIVER_VER:-}" ]]; then
-  echo "[!] Could not parse CUDA driver version from nvidia-smi. Continuing with safe defaults."
-else
-  echo "[*] Detected CUDA driver version: $CUDA_DRIVER_VER"
-fi
+ensure_packages() {
+  log "Installing required packages..."
+  sudo apt update
+  sudo apt install -y python3 python3-venv python3-pip build-essential curl ca-certificates
+}
 
-### Decide on PyTorch CUDA wheel
-# Strategy:
-#  - If driver CUDA >= 12.1 -> try cu121 wheels
-#  - else -> fall back to cu118 wheels
-# PyTorch publishes wheels per toolkit version; driver just needs to support that level. [web:61][web:67]
-PYTORCH_VERSION=""
-if [[ -n "${CUDA_DRIVER_VER:-}" ]]; then
-  # crude numeric comparison: take major.minor
-  DRV_MAJOR=${CUDA_DRIVER_VER%%.*}
-  DRV_MINOR=${CUDA_DRIVER_VER#*.}
-  DRV_MINOR=${DRV_MINOR%%.*}
+require_nvidia() {
+  log "Checking for NVIDIA driver..."
+  require_cmd nvidia-smi
+  log "nvidia-smi output:"
+  nvidia-smi || true
+}
 
-  if (( DRV_MAJOR > 12 )) || (( DRV_MAJOR == 12 && DRV_MINOR >= 1 )); then
-    PYTORCH_VERSION="cu121"
-    echo "[*] Choosing PyTorch wheels for CUDA 12.1 (cu121)."
+get_cuda_driver_version() {
+  nvidia-smi | awk '/CUDA Version:/ {print $NF; exit}'
+}
+
+choose_pytorch_cuda() {
+  local cuda_driver_ver="${1:-}"
+  local drv_major drv_minor
+
+  if [[ -n "$cuda_driver_ver" ]]; then
+    drv_major=${cuda_driver_ver%%.*}
+    drv_minor=${cuda_driver_ver#*.}
+    drv_minor=${drv_minor%%.*}
+
+    if (( drv_major > 12 )) || (( drv_major == 12 && drv_minor >= 1 )); then
+      PYTORCH_CUDA_TAG="cu121"
+    else
+      PYTORCH_CUDA_TAG="cu118"
+    fi
   else
-    PYTORCH_VERSION="cu118"
-    echo "[*] Driver CUDA < 12.1, using cu118 wheels."
+    PYTORCH_CUDA_TAG="cu118"
   fi
-else
-  PYTORCH_VERSION="cu118"
-  echo "[*] Falling back to cu118 wheels."
-fi
 
-$PYTORCH_INDEX_URL="https://download.pytorch.org/whl/$PYTORCH_VERSION"
+  PYTORCH_INDEX_URL="https://download.pytorch.org/whl/${PYTORCH_CUDA_TAG}"
+  log "Using PyTorch wheel channel ${PYTORCH_CUDA_TAG} (${PYTORCH_INDEX_URL})"
+}
 
-echo "[*] Installing Python, venv, and basic build tools..."
-sudo apt update
-sudo apt install -y python3 python3-venv python3-pip build-essential
+ensure_venv() {
+  if [[ ! -d "$VENV_DIR" ]]; then
+    log "Creating Python virtual environment at $VENV_DIR..."
+    python3 -m venv "$VENV_DIR"
+  fi
+  # shellcheck disable=SC1090
+  source "$VENV_DIR/bin/activate"
+  log "Upgrading pip..."
+  pip install --upgrade pip setuptools wheel
+}
 
-if [[ ! -d "$VENV_DIR" ]]; then
-  echo "[*] Creating Python virtual environment at $VENV_DIR..."
-  python3 -m venv "$VENV_DIR"
-fi
+install_pytorch_and_vllm() {
+  log "Installing PyTorch from $PYTORCH_INDEX_URL ..."
+  pip install torch torchvision torchaudio --index-url "$PYTORCH_INDEX_URL"
 
-# shellcheck disable=SC1090
-source "$VENV_DIR/bin/activate"
-
-echo "[*] Upgrading pip..."
-pip install --upgrade pip
-
-echo "[*] Installing PyTorch with GPU support from $PYTORCH_INDEX_URL ..."
-pip install torch torchvision torchaudio --index-url "$PYTORCH_INDEX_URL"
-
-echo "[*] Verifying PyTorch CUDA availability..."
-python - <<'EOF'
+  log "Verifying PyTorch CUDA availability..."
+  python - <<'PYEOF'
 import torch
-print("torch.version:", torch.__version__)
-print("CUDA available:", torch.cuda.is_available())
+print('torch.version:', torch.__version__)
+print('CUDA available:', torch.cuda.is_available())
 if torch.cuda.is_available():
-    print("GPU:", torch.cuda.get_device_name(0))
+    print('GPU:', torch.cuda.get_device_name(0))
 else:
-    raise SystemExit("CUDA is not available in PyTorch; check driver/toolkit/wheel.")
-EOF
+    raise SystemExit('CUDA is not available in PyTorch; check driver/toolkit/wheel.')
+PYEOF
 
-echo "[*] Installing vLLM..."
-pip install vllm
+  log "Installing vLLM..."
+  pip install vllm
+}
 
-echo "[*] vLLM installed in virtualenv $VENV_DIR."
-
-echo
-echo "Manual server start example:"
-echo "  source \"$VENV_DIR/bin/activate\""
-echo "  python -m vllm.entrypoints.openai_api_server \\"
-echo "    --model \"$DEFAULT_MODEL\" \\"
-echo "    --port $SERVICE_PORT"
-
-### Create systemd user service for vLLM
-echo "[*] Setting up systemd user service for vLLM..."
-mkdir -p "$SYSTEMD_UNIT_DIR"
-
-# We use a small wrapper to ensure the venv is activated in the service.
-WRAPPER="$VENV_DIR/run-vllm-server.sh"
-cat > "$WRAPPER" <<EOF
+write_wrapper() {
+  local wrapper="$VENV_DIR/run-vllm-server.sh"
+  cat > "$wrapper" <<EOF2
 #!/usr/bin/env bash
+set -euo pipefail
 source "$VENV_DIR/bin/activate"
-exec python -m vllm.entrypoints.openai_api_server \\
-  --model "$DEFAULT_MODEL" \\
-  --port $SERVICE_PORT --host 0.0.0.0
-EOF
-chmod +x "$WRAPPER"
+exec python -m vllm.entrypoints.openai_api_server \
+  --host "$HOST" \
+  --port "$SERVICE_PORT" \
+  --model "\${VLLM_MODEL:-$DEFAULT_MODEL}" \
+  \${VLLM_EXTRA_ARGS:-}
+EOF2
+  chmod +x "$wrapper"
+  WRAPPER_PATH="$wrapper"
+}
 
-cat > "$SYSTEMD_UNIT_DIR/$SERVICE_NAME" <<EOF
+write_service() {
+  mkdir -p "$SYSTEMD_UNIT_DIR"
+  cat > "$SYSTEMD_UNIT_DIR/$SERVICE_NAME" <<EOF2
 [Unit]
 Description=vLLM OpenAI-compatible server
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=$WRAPPER
+ExecStart=$WRAPPER_PATH
 Restart=on-failure
-Environment=PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin
+RestartSec=5
+Environment=HOME=%h
+WorkingDirectory=%h
 
 [Install]
 WantedBy=default.target
-EOF
+EOF2
+}
 
-echo "[*] systemd unit created at $SYSTEMD_UNIT_DIR/$SERVICE_NAME"
-echo
-echo "You can manage it with (user services):"
-echo "  systemctl --user daemon-reload"
-echo "  systemctl --user start $SERVICE_NAME"
-echo "  systemctl --user status $SERVICE_NAME"
+enable_service() {
+  log "Reloading user systemd daemon..."
+  systemctl --user daemon-reload
+  log "Enabling and starting $SERVICE_NAME ..."
+  systemctl --user enable --now "$SERVICE_NAME"
+}
 
-systemctl --user daemon-reload || true
+print_hints() {
+  cat <<EOF2
 
-read -r -p "Enable and start vllm-server.service now? (y/N) " ans
-case "$ans" in
-  y|Y)
-    systemctl --user enable --now "$SERVICE_NAME"
-    echo "[*] vllm-server.service enabled and started."
-    ;;
-  *)
-    echo "[*] Skipping enable/start. You can start it later with:"
-    echo "    systemctl --user start $SERVICE_NAME"
-    ;;
-esac
+Manual server start example:
+  source "$VENV_DIR/bin/activate"
+  python -m vllm.entrypoints.openai_api_server \
+    --host "$HOST" \
+    --port "$SERVICE_PORT" \
+    --model "$DEFAULT_MODEL"
 
+Suggested model download command:
+  huggingface-cli download "$DEFAULT_MODEL"
 
-echo "[*] Done. vLLM is installed in $VENV_DIR."
+User service management:
+  systemctl --user status $SERVICE_NAME
+  systemctl --user restart $SERVICE_NAME
+  journalctl --user -u $SERVICE_NAME -f
+
+If you want the user service to survive logout:
+  sudo loginctl enable-linger "$USER"
+EOF2
+}
+
+main() {
+  ensure_packages
+  require_nvidia
+  CUDA_DRIVER_VER="$(get_cuda_driver_version || true)"
+  if [[ -n "${CUDA_DRIVER_VER:-}" ]]; then
+    log "Detected CUDA driver version: $CUDA_DRIVER_VER"
+  else
+    warn "Could not parse CUDA driver version from nvidia-smi. Continuing with safe defaults."
+  fi
+  choose_pytorch_cuda "${CUDA_DRIVER_VER:-}"
+  ensure_venv
+  install_pytorch_and_vllm
+  write_wrapper
+  write_service
+  enable_service
+  log "vLLM installation complete."
+  print_hints
+}
+
+main "$@"
