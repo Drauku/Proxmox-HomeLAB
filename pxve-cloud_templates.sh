@@ -30,7 +30,12 @@ distros=(
 )
 
 curl_get() {
+    echo "[debug] curl_get: $1" >&2
     curl -A "$CURL_UA" -fsSL "$1"
+}
+
+debug_log() {
+    echo "[debug] $*" >&2
 }
 
 show_help() {
@@ -69,18 +74,22 @@ manage_existing() {
 
 resolve_debian() {
     local finder page image suite version best_version best_suite
+    debug_log "Starting Debian resolver"
     finder=$(curl_get "https://image-finder.debian.net/") || return 1
     while read -r line; do
         suite=$(printf '%s' "$line" | grep -oE 'bookworm|trixie|forky|stable|oldstable' | head -n1)
         version=$(printf '%s' "$line" | grep -oE 'debian-[0-9]+' | head -n1 | grep -oE '[0-9]+')
         if [[ -n "$suite" && -n "$version" ]]; then
+            debug_log "Debian candidate suite=$suite version=$version"
             printf '%s %s\n' "$version" "$suite"
         fi
     done < <(printf '%s' "$finder" | grep 'genericcloud amd64') | sort -V | tail -n1 | {
         read -r best_version best_suite
+        debug_log "Debian selected suite=$best_suite version=$best_version"
         [[ -n "$best_version" && -n "$best_suite" ]] || exit 1
         page=$(curl_get "https://cloud.debian.org/images/cloud/${best_suite}/latest/") || exit 1
         image=$(printf '%s' "$page" | grep -oE "debian-${best_version}-genericcloud-amd64\.qcow2" | head -n1)
+        debug_log "Debian resolved image=$image"
         [[ -n "$image" ]] || exit 1
         printf 'RESOLVED_URL=https://cloud.debian.org/images/cloud/%s/latest/%s\n' "$best_suite" "$image"
         printf 'RESOLVED_SUM=https://cloud.debian.org/images/cloud/%s/latest/SHA512SUMS\n' "$best_suite"
@@ -90,23 +99,31 @@ resolve_debian() {
             RESOLVED_SUM) RESOLVED_SUM="$v" ;;
         esac
     done
+    debug_log "Debian final url=${RESOLVED_URL:-<empty>} checksum=${RESOLVED_SUM:-<empty>}"
     [[ -n "${RESOLVED_URL:-}" ]] || return 1
 }
 
 resolve_ubuntu() {
-    local page version rel_path
+    local page version rel_path rel
+    debug_log "Starting Ubuntu resolver"
     page=$(curl_get "https://cloud-images.ubuntu.com/") || return 1
     rel_path=$(printf '%s' "$page" | grep -oE '[a-z]+/[^<]*Ubuntu Server [0-9]+\.[0-9]+ LTS' | grep -oE '^[a-z]+/' | sed 's:/$::' | while read -r suite; do
         rel=$(curl_get "https://cloud-images.ubuntu.com/${suite}/") || continue
         version=$(printf '%s' "$rel" | grep -oE 'ubuntu-[0-9]+\.[0-9]+-server-cloudimg-amd64\.img' | head -n1 | grep -oE '[0-9]+\.[0-9]+')
-        [[ "$version" == *.04 ]] && printf '%s %s\n' "$version" "$suite"
+        if [[ "$version" == *.04 ]]; then
+            debug_log "Ubuntu candidate suite=$suite version=$version"
+            printf '%s %s\n' "$version" "$suite"
+        fi
     done | sort -V | tail -n1 | awk '{print $2}')
+    debug_log "Ubuntu selected suite path=${rel_path:-<empty>}"
     [[ -z "$rel_path" ]] && return 1
     page=$(curl_get "https://cloud-images.ubuntu.com/${rel_path}/") || return 1
     version=$(printf '%s' "$page" | grep -oE 'ubuntu-[0-9]+\.[0-9]+-server-cloudimg-amd64\.img' | head -n1 | grep -oE '[0-9]+\.[0-9]+')
+    debug_log "Ubuntu selected version=${version:-<empty>}"
     [[ -z "$version" ]] && return 1
     RESOLVED_URL="https://cloud-images.ubuntu.com/${rel_path}/ubuntu-${version}-server-cloudimg-amd64.img"
     RESOLVED_SUM="https://cloud-images.ubuntu.com/${rel_path}/SHA256SUMS"
+    debug_log "Ubuntu final url=$RESOLVED_URL checksum=$RESOLVED_SUM"
 }
 
 resolve_rocky() {
