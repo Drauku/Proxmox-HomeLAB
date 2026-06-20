@@ -59,6 +59,7 @@ install_debian_nvidia_cuda() {
 install_hf_cli() {
   log "Installing Hugging Face CLI with pipx..."
   pipx install --force huggingface_hub
+  pipx ensurepath
   if command -v hf >/dev/null 2>&1; then
     HF_CMD="hf"
   elif command -v huggingface-cli >/dev/null 2>&1; then
