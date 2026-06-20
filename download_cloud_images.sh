@@ -15,32 +15,24 @@ storage=$(pvesm status | awk '/local-/{print $1; exit}')
 vm_confs="/etc/pve/qemu-server"
 vm_image="/var/lib/vz/template/iso"
 
-ip_addr="192.168.186.100"
-ip_cidr="${ip_addr}/24"
-netmask="255.255.255.0"
-gateway="192.168.186.254"
-dns0="192.168.186.253"
-dns1="9.9.9.9"
-dns2="1.1.1.1"
+# Safer default than forcing serial0 for every image.
+# Proxmox documents serial0/vga serial0 as useful for many cloud images,
+# but explicitly says to switch back to the default display if an image
+# does not work with it. Fedora users have hit that exact issue.
+DEFAULT_VGA="default"
+DEFAULT_SERIAL="socket"
 
-# Distro definitions
 # format:
-# distro;vmid;template-name;local-image-name;image-url;checksum-or-checksum-url
-# Notes:
-# - Debian uses the stable 'latest' bookworm path.
-# - Ubuntu uses current Noble LTS path.
-# - Rocky 10 currently publishes GenericCloud Base under vault/10.0.
-# - Fedora uses the current stable release shown on Fedora Cloud download page (44 at time of writing).
-# - Arch uses the current mirror filename cloudimg, not cloudinit.
-# - Alpine uses latest-stable NoCloud BIOS qcow2 for Proxmox/KVM.
+# distro;vmid;template-name;local-image-name;resolver-key
+# URL/checksum are resolved at runtime whenever practical.
 distros=(
-    "arch;9000;tmpl-arch-latest;arch-latest.qcow2;https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2;https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2.SHA256"
-    "alpine;9022;tmpl-alpine-3-22;alpine-3.22.qcow2;https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/cloud/nocloud_alpine-virt-3.22.2-x86_64-bios-cloudinit-r0.qcow2;"
-    "debian;9113;tmpl-debian-12;debian-12.qcow2;https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2;https://cloud.debian.org/images/cloud/bookworm/latest/SHA512SUMS"
-    "ubuntu;9125;tmpl-ubuntu-25;ubuntu-25-04.img;https://cloud-images.ubuntu.com/releases/plucky/release/ubuntu-25.04-server-cloudimg-amd64.img;534cbf0c44e86862535502f853829cefb771d19991892a31d14827d985829612"
-    "rocky;9210;tmpl-rocky-10;rocky-10.qcow2;https://dl.rockylinux.org/vault/rocky/10.0/images/x86_64/Rocky-10-GenericCloud-Base.latest.x86_64.qcow2;https://dl.rockylinux.org/vault/rocky/10.0/images/x86_64/Rocky-10-GenericCloud-Base.latest.x86_64.qcow2.CHECKSUM"
-    "coreos;9223;tmpl-coreos-stable;coreos.qcow2.xz;https://builds.coreos.fedoraproject.org/prod/streams/stable/builds/43.20260119.3.1/x86_64/fedora-coreos-43.20260119.3.1-qemu.x86_64.qcow2.xz;76f1d1c22d09ac27a6ff2c78fc9418d82307f23a9fd558e40a289ff5a3212bcd"
-    "fedora;9244;tmpl-fedora-44;fedora-44.qcow2;https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-20260424.n.0.x86_64.qcow2;https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-images-44-x86_64-20260424.n.0-CHECKSUM"
+    "debian;9013;tmpl-debian-12;debian-12.qcow2;debian"
+    "ubuntu;9024;tmpl-ubuntu-24-04;ubuntu-24-04.img;ubuntu"
+    "rocky;9110;tmpl-rocky-10;rocky-10.qcow2;rocky"
+    "coreos;9123;tmpl-coreos-stable;coreos.qcow2.xz;coreos"
+    "fedora;9144;tmpl-fedora-latest;fedora-latest.qcow2;fedora"
+    "arch;9200;tmpl-arch-latest;arch-latest.qcow2;arch"
+    "alpine;9322;tmpl-alpine-latest;alpine-latest.qcow2;alpine"
 )
 
 show_help() {
@@ -54,14 +46,13 @@ show_help() {
 }
 
 webtest() {
-  local target="cloudflare.com"
-  curl -sf --connect-timeout 5 -o /dev/null "https://$target"
+    curl -sf --connect-timeout 5 -o /dev/null "https://cloudflare.com"
 }
 
 manage_existing() {
     local vmid="$1"
     if [[ -f "$vm_confs/$vmid.conf" ]]; then
-        echo "${ylw}Template $vmid already exists.${rst}"
+        echo "${ylw}Template/VM $vmid already exists.${rst}"
         read -p "Would you like to destroy and recreate it? (y/N): " choice
         case "$choice" in
             y|Y )
@@ -78,41 +69,106 @@ manage_existing() {
     return 0
 }
 
+resolve_debian() {
+    RESOLVED_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
+    RESOLVED_SUM="https://cloud.debian.org/images/cloud/bookworm/latest/SHA512SUMS"
+}
+
+resolve_ubuntu() {
+    RESOLVED_URL="https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+    RESOLVED_SUM="https://cloud-images.ubuntu.com/noble/current/SHA256SUMS"
+}
+
+resolve_rocky() {
+    RESOLVED_URL="https://dl.rockylinux.org/vault/rocky/10.0/images/x86_64/Rocky-10-GenericCloud-Base.latest.x86_64.qcow2"
+    RESOLVED_SUM="https://dl.rockylinux.org/vault/rocky/10.0/images/x86_64/Rocky-10-GenericCloud-Base.latest.x86_64.qcow2.CHECKSUM"
+}
+
+resolve_coreos() {
+    local json url sum
+    json=$(curl -fsSL "https://builds.coreos.fedoraproject.org/streams/stable.json") || return 1
+    url=$(printf '%s' "$json" | jq -r '.architectures.x86_64.artifacts.qemu.formats["qcow2.xz"].disk.location') || return 1
+    sum=$(printf '%s' "$json" | jq -r '.architectures.x86_64.artifacts.qemu.formats["qcow2.xz"].disk.sha256') || return 1
+    [[ -z "$url" || "$url" == "null" ]] && return 1
+    [[ -z "$sum" || "$sum" == "null" ]] && return 1
+    RESOLVED_URL="$url"
+    RESOLVED_SUM="$sum"
+}
+
+resolve_fedora() {
+    local html rel base img csum
+    html=$(curl -fsSL "https://fedoraproject.org/cloud/download/") || return 1
+    rel=$(printf '%s' "$html" | grep -oE '/pub/fedora/linux/releases/[0-9]+/Cloud/x86_64/images/' | head -n1 | grep -oE '[0-9]+' | head -n1)
+    [[ -z "$rel" ]] && return 1
+    base="https://download.fedoraproject.org/pub/fedora/linux/releases/${rel}/Cloud/x86_64/images"
+    img=$(curl -fsSL "$base/" | grep -oE "Fedora-Cloud-Base-Generic-${rel}-[A-Za-z0-9._-]+\.x86_64\.qcow2" | head -n1)
+    csum=$(curl -fsSL "$base/" | grep -oE "Fedora-Cloud-[A-Za-z0-9._-]*CHECKSUM" | head -n1)
+    [[ -z "$img" || -z "$csum" ]] && return 1
+    RESOLVED_URL="$base/$img"
+    RESOLVED_SUM="$base/$csum"
+}
+
+resolve_arch() {
+    RESOLVED_URL="https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2"
+    RESOLVED_SUM="https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2.SHA256"
+}
+
+resolve_alpine() {
+    local index file sum
+    index=$(curl -fsSL "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/cloud/") || return 1
+    file=$(printf '%s' "$index" | grep -oE 'nocloud_alpine-virt-[0-9.]+-x86_64-bios-cloudinit-r[0-9]+\.qcow2' | sort -V | tail -n1)
+    [[ -z "$file" ]] && return 1
+    RESOLVED_URL="https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/cloud/$file"
+    if printf '%s' "$index" | grep -q "${file}\.sha256"; then
+        RESOLVED_SUM="https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/cloud/${file}.sha256"
+    else
+        RESOLVED_SUM=""
+    fi
+}
+
+resolve_distro() {
+    local key="$1"
+    RESOLVED_URL=""
+    RESOLVED_SUM=""
+    case "$key" in
+        debian) resolve_debian ;;
+        ubuntu) resolve_ubuntu ;;
+        rocky) resolve_rocky ;;
+        coreos) resolve_coreos ;;
+        fedora) resolve_fedora ;;
+        arch) resolve_arch ;;
+        alpine) resolve_alpine ;;
+        *) return 1 ;;
+    esac
+}
+
 verify_checksum() {
     local file="$1"
     local input="${2:-}"
-
     [[ -z "$input" ]] && echo "${ylw}No checksum provided. Skipping verification.${rst}" && return 0
 
     local expected_sum=""
-
     if [[ "$input" =~ ^https?:// ]]; then
         echo "Fetching checksum file from remote..."
-        local sum_file
+        local sum_file filename match
         sum_file=$(mktemp)
-
         if ! wget -q "$input" -O "$sum_file"; then
             echo "${red}Failed to download checksum file.${rst}"
             rm -f "$sum_file"
             return 1
         fi
-
-        local filename match
         filename=$(basename "$file")
         match=$(grep -F "$filename" "$sum_file" | head -n1)
-        rm -f "$sum_file"
-
         if [[ -z "$match" ]]; then
-            echo "${red}Filename '$filename' not found in remote checksum file.${rst}"
-            return 1
+            match=$(awk 'NF==1 {print $1}' "$sum_file" | head -n1)
         fi
-
+        rm -f "$sum_file"
+        [[ -z "$match" ]] && echo "${red}Checksum entry not found for $filename.${rst}" && return 1
         if [[ "$match" == *" = "* ]]; then
             expected_sum=$(echo "$match" | awk -F ' = ' '{print $2}')
         else
             expected_sum=$(echo "$match" | awk '{print $1}')
         fi
-        echo "Found hash: ${expected_sum:0:12}..."
     else
         expected_sum="$input"
     fi
@@ -127,10 +183,10 @@ verify_checksum() {
     if echo "$expected_sum  $file" | $cmd --check --status; then
         echo "${grn}Checksum verified ($cmd).${rst}"
         return 0
-    else
-        echo "${red}Checksum mismatch!${rst}"
-        return 1
     fi
+
+    echo "${red}Checksum mismatch!${rst}"
+    return 1
 }
 
 create_template() {
@@ -181,15 +237,12 @@ create_template() {
     if ! qm set "$vmid" --scsi0 "${storage}:0,import-from=$(pwd)/$image,discard=on"; then
         echo "${ylw}Import failed.${rst} Checking if decompression is needed..."
         if [[ "$image" == *.xz ]]; then
-            echo "Extracting .xz file..."
             xz -d "$image"
             image="${image%.xz}"
         elif [[ "$image" == *.gz ]]; then
-            echo "Extracting .gz file..."
             gunzip "$image"
             image="${image%.gz}"
         fi
-        echo "Retrying import with $image..."
         if ! qm set "$vmid" --scsi0 "${storage}:0,import-from=$(pwd)/$image,discard=on"; then
             echo "${red}Failed to import disk even after extraction.${rst} Cleanup..."
             rm -f "$image"
@@ -199,14 +252,14 @@ create_template() {
     fi
 
     qm set "$vmid" --net0 virtio,bridge=vmbr0
-    qm set "$vmid" --serial0 socket --vga serial0
+    qm set "$vmid" --serial0 "$DEFAULT_SERIAL" --vga "$DEFAULT_VGA"
     qm set "$vmid" --memory 1024 --cores 2 --cpu x86-64-v2-AES
     qm set "$vmid" --boot order=scsi0 --scsihw virtio-scsi-single
     qm set "$vmid" --agent enabled=1,fstrim_cloned_disks=1
     qm set "$vmid" --ide2 "${storage}:cloudinit"
     qm set "$vmid" --ipconfig0 "ip6=auto,ip=dhcp"
-    qm set "$vmid" --sshkeys "${ssh_keyfile}"
-    qm set "$vmid" --ciuser "${username}"
+    qm set "$vmid" --sshkeys "$ssh_keyfile"
+    qm set "$vmid" --ciuser "$username"
     qm disk resize "$vmid" scsi0 8G
     qm template "$vmid"
 
@@ -219,7 +272,11 @@ download_distro() {
     for distro_data in "${distros[@]}"; do
         if [[ "$distro_data" == "$distro_name"* ]]; then
             IFS=';' read -r -a params <<< "$distro_data"
-            create_template "${params[1]}" "${params[2]}" "${params[3]}" "${params[4]}" "${params[5]}"
+            if ! resolve_distro "${params[4]}"; then
+                echo "${red}Failed to resolve latest image for $distro_name.${rst}"
+                return 1
+            fi
+            create_template "${params[1]}" "${params[2]}" "${params[3]}" "$RESOLVED_URL" "$RESOLVED_SUM"
             return
         fi
     done
