@@ -92,8 +92,8 @@ resolve_rocky() {
 resolve_coreos() {
     local json url sum
     json=$(curl -fsSL "https://builds.coreos.fedoraproject.org/streams/stable.json") || return 1
-    url=$(printf '%s' "$json" | jq -r '.architectures.x86_64.artifacts.qemu.formats["qcow2.xz"].disk.location') || return 1
-    sum=$(printf '%s' "$json" | jq -r '.architectures.x86_64.artifacts.qemu.formats["qcow2.xz"].disk.sha256') || return 1
+    url=$(printf '%s' "$json" | python3 -c 'import sys, json; d=json.load(sys.stdin); print(d["architectures"]["x86_64"]["artifacts"]["qemu"]["formats"]["qcow2.xz"]["disk"]["location"])') || return 1
+    sum=$(printf '%s' "$json" | python3 -c 'import sys, json; d=json.load(sys.stdin); print(d["architectures"]["x86_64"]["artifacts"]["qemu"]["formats"]["qcow2.xz"]["disk"]["sha256"])') || return 1
     [[ -z "$url" || "$url" == "null" ]] && return 1
     [[ -z "$sum" || "$sum" == "null" ]] && return 1
     RESOLVED_URL="$url"
@@ -119,13 +119,16 @@ resolve_arch() {
 }
 
 resolve_alpine() {
-    local index file
-    index=$(curl -fsSL "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/cloud/") || return 1
-    file=$(printf '%s' "$index" | grep -oE 'nocloud_alpine-virt-[0-9.]+-x86_64-bios-cloudinit-r[0-9]+\.qcow2' | sort -V | tail -n1)
+    local index file base
+    base="https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/cloud"
+    index=$(curl -fsSL "$base/") || return 1
+    file=$(printf '%s' "$index" | grep -oE 'generic_alpine-[0-9.]+-x86_64-bios-cloudinit(-metal)?-r[0-9]+\.qcow2' | sort -V | tail -n1)
     [[ -z "$file" ]] && return 1
-    RESOLVED_URL="https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/cloud/$file"
+    RESOLVED_URL="$base/$file"
     if printf '%s' "$index" | grep -q "${file}\.sha256"; then
-        RESOLVED_SUM="https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/cloud/${file}.sha256"
+        RESOLVED_SUM="$base/${file}.sha256"
+    elif printf '%s' "$index" | grep -q "${file}\.sha512"; then
+        RESOLVED_SUM="$base/${file}.sha512"
     else
         RESOLVED_SUM=""
     fi
