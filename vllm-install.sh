@@ -2,6 +2,7 @@
 set -euo pipefail
 
 VENV_DIR="${VENV_DIR:-$HOME/vllm-env}"
+PYTHON_BIN="${PYTHON_BIN:-}"
 SYSTEMD_UNIT_DIR="${SYSTEMD_UNIT_DIR:-$HOME/.config/systemd/user}"
 SERVICE_NAME="${SERVICE_NAME:-vllm-server.service}"
 SERVICE_PORT="${SERVICE_PORT:-8000}"
@@ -14,6 +15,17 @@ warn() { printf '[!] %s\n' "$*"; }
 die() { printf '[-] %s\n' "$*" >&2; exit 1; }
 
 require_cmd() { command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"; }
+
+select_python_bin() {
+  if [[ -n "$PYTHON_BIN" ]]; then
+    require_cmd "$PYTHON_BIN"
+  elif command -v python3.12 >/dev/null 2>&1; then
+    PYTHON_BIN="python3.12"
+  else
+    PYTHON_BIN="python3"
+  fi
+  log "Using Python interpreter: $PYTHON_BIN"
+}
 
 ensure_nonfree_components() {
   [[ -f "$SOURCES_FILE" ]] || die "$SOURCES_FILE not found. This script expects Debian deb822 sources."
@@ -48,6 +60,10 @@ ensure_debian_nvidia_stack() {
     python3-pip \
     nvidia-driver \
     nvidia-cuda-toolkit
+
+  if apt-cache show python3.12-venv >/dev/null 2>&1; then
+    sudo apt install -y python3.12 python3.12-venv
+  fi
 }
 
 require_nvidia() {
@@ -63,35 +79,25 @@ get_cuda_driver_version() {
 
 choose_pytorch_cuda() {
   local cuda_driver_ver="${1:-}"
-  local drv_major drv_minor
-
   if [[ -n "$cuda_driver_ver" ]]; then
-    drv_major=${cuda_driver_ver%%.*}
-    drv_minor=${cuda_driver_ver#*.}
-    drv_minor=${drv_minor%%.*}
-
-    if (( drv_major > 12 )) || (( drv_major == 12 && drv_minor >= 1 )); then
-      PYTORCH_CUDA_TAG="cu121"
-    else
-      PYTORCH_CUDA_TAG="cu118"
-    fi
-  else
-    PYTORCH_CUDA_TAG="cu118"
+    log "Detected CUDA driver version for PyTorch selection: $cuda_driver_ver"
   fi
-
+  PYTORCH_CUDA_TAG="cu121"
   PYTORCH_INDEX_URL="https://download.pytorch.org/whl/${PYTORCH_CUDA_TAG}"
-  log "Using PyTorch wheel channel ${PYTORCH_CUDA_TAG} (${PYTORCH_INDEX_URL})"
+  log "Using conservative PyTorch wheel channel ${PYTORCH_CUDA_TAG} (${PYTORCH_INDEX_URL})"
 }
 
 ensure_venv() {
   if [[ ! -d "$VENV_DIR" ]]; then
     log "Creating Python virtual environment at $VENV_DIR..."
-    python3 -m venv "$VENV_DIR"
+    "$PYTHON_BIN" -m venv "$VENV_DIR"
   fi
   # shellcheck disable=SC1090
   source "$VENV_DIR/bin/activate"
-  log "Upgrading pip..."
-  pip install --upgrade pip setuptools wheel
+  log "Upgrading pip and wheel..."
+  pip install --upgrade pip wheel
+  log "Pinning setuptools to a vLLM/PyTorch-compatible range..."
+  pip install 'setuptools>=77.0.3,<81.0.0'
   log "Installing Hugging Face CLI support in the venv..."
   pip install --upgrade huggingface_hub[cli]
   if command -v hf >/dev/null 2>&1; then
@@ -194,6 +200,7 @@ EOF2
 main() {
   ensure_nonfree_components
   ensure_debian_nvidia_stack
+  select_python_bin
   require_nvidia
   require_cmd nvcc
   CUDA_DRIVER_VER="$(get_cuda_driver_version || true)"
