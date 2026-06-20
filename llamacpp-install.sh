@@ -6,6 +6,7 @@ MODEL_DIR="${MODEL_DIR:-$HOME/models}"
 SYSTEMD_UNIT_DIR="${SYSTEMD_UNIT_DIR:-$HOME/.config/systemd/user}"
 SERVICE_NAME="${SERVICE_NAME:-llama-server.service}"
 SERVICE_PORT="${SERVICE_PORT:-8080}"
+BUILD_DIR="${BUILD_DIR:-$LLAMA_DIR/build-ninja}"
 DEFAULT_MODEL_FILE="${DEFAULT_MODEL_FILE:-$MODEL_DIR/model.gguf}"
 HOST="${HOST:-0.0.0.0}"
 SOURCES_FILE="${SOURCES_FILE:-/etc/apt/sources.list.d/debian.sources}"
@@ -89,12 +90,12 @@ clone_or_update_llama() {
 }
 
 build_llama() {
-  log "Building llama.cpp with CUDA support..."
-  cmake -S "$LLAMA_DIR" -B "$LLAMA_DIR/build" -G Ninja \
+  log "Building llama.cpp with CUDA support in $BUILD_DIR ..."
+  cmake -S "$LLAMA_DIR" -B "$BUILD_DIR" -G Ninja \
     -DGGML_CUDA=ON \
     -DCMAKE_CUDA_COMPILER=/usr/bin/nvcc \
     -DCMAKE_BUILD_TYPE=Release
-  cmake --build "$LLAMA_DIR/build" --parallel "$(nproc)" --target llama-cli llama-server
+  cmake --build "$BUILD_DIR" --parallel "$(nproc)" --target llama-cli llama-server
 }
 
 write_service() {
@@ -107,7 +108,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=$LLAMA_DIR/build/bin/llama-server --host $HOST --port $SERVICE_PORT --model \${LLAMA_MODEL:-$DEFAULT_MODEL_FILE} \${LLAMA_EXTRA_ARGS:-}
+ExecStart=$BUILD_DIR/bin/llama-server --host $HOST --port $SERVICE_PORT --model \${LLAMA_MODEL:-$DEFAULT_MODEL_FILE} \${LLAMA_EXTRA_ARGS:-}
 Restart=on-failure
 RestartSec=5
 Environment=HOME=%h
@@ -128,10 +129,14 @@ print_hints() {
   cat <<EOF2
 
 Manual server start example:
-  "$LLAMA_DIR/build/bin/llama-server" --host "$HOST" --port "$SERVICE_PORT" --model "$DEFAULT_MODEL_FILE"
+  "$BUILD_DIR/bin/llama-server" --host "$HOST" --port "$SERVICE_PORT" --model "$DEFAULT_MODEL_FILE"
 
 Suggested model download command:
   $HF_CMD download REPO_ID FILENAME --local-dir "$MODEL_DIR"
+
+PATH note:
+  pipx ensurepath may require opening a new shell before plain '$HF_CMD' works.
+  Until then, use ~/.local/bin/$HF_CMD
 
 User service management:
   systemctl --user status $SERVICE_NAME
