@@ -17,16 +17,21 @@ vm_image="/var/lib/vz/template/iso"
 
 DEFAULT_VGA="default"
 DEFAULT_SERIAL="socket"
+CURL_UA="Mozilla/5.0 (X11; Linux x86_64) pxve-cloud-templates/1.0"
 
 distros=(
     "debian;9013;tmpl-debian-13;debian-13.qcow2;debian"
-    "ubuntu;9026;tmpl-ubuntu-26-04;ubuntu-26-04.img;ubuntu"
+    "ubuntu;9026;tmpl-ubuntu-lts;ubuntu-lts.img;ubuntu"
     "rocky;9110;tmpl-rocky-10;rocky-10.qcow2;rocky"
     "coreos;9123;tmpl-coreos-stable;coreos.qcow2.xz;coreos"
     "fedora;9144;tmpl-fedora-latest;fedora-latest.qcow2;fedora"
     "arch;9200;tmpl-arch-latest;arch-latest.qcow2;arch"
     "alpine;9322;tmpl-alpine-latest;alpine-latest.qcow2;alpine"
 )
+
+curl_get() {
+    curl -A "$CURL_UA" -fsSL "$1"
+}
 
 show_help() {
     echo "${ylw}Usage:${rst} $0 [all|distro] [username]"
@@ -39,7 +44,7 @@ show_help() {
 }
 
 webtest() {
-    curl -sf --connect-timeout 5 -o /dev/null "https://cloudflare.com"
+    curl -A "$CURL_UA" -sf --connect-timeout 5 -o /dev/null "https://cloudflare.com"
 }
 
 manage_existing() {
@@ -63,38 +68,45 @@ manage_existing() {
 }
 
 resolve_debian() {
-    local root_html suite suite_path page version image_prefix
-    root_html=$(curl -fsSL "https://cloud.debian.org/images/cloud/") || return 1
-    suite_path=$(printf '%s' "$root_html" | grep -oE 'href="[a-z]+/"' | cut -d'"' -f2 | sed 's:/$::' | while read -r suite; do
-        page=$(curl -fsSL "https://cloud.debian.org/images/cloud/${suite}/latest/") || continue
-        version=$(printf '%s' "$page" | grep -oE 'debian-[0-9]+-genericcloud-amd64\.qcow2' | head -n1 | grep -oE '[0-9]+')
-        [[ -n "$version" ]] && printf '%s %s
-' "$version" "$suite"
-    done | sort -V | tail -n1 | awk '{print $2}')
-    [[ -z "$suite_path" ]] && return 1
-    page=$(curl -fsSL "https://cloud.debian.org/images/cloud/${suite_path}/latest/") || return 1
-    image_prefix=$(printf '%s' "$page" | grep -oE 'debian-[0-9]+-genericcloud-amd64' | head -n1)
-    [[ -z "$image_prefix" ]] && return 1
-    RESOLVED_URL="https://cloud.debian.org/images/cloud/${suite_path}/latest/${image_prefix}.qcow2"
-    RESOLVED_SUM="https://cloud.debian.org/images/cloud/${suite_path}/latest/SHA512SUMS"
+    local finder page image suite version best_version best_suite
+    finder=$(curl_get "https://image-finder.debian.net/") || return 1
+    while read -r line; do
+        suite=$(printf '%s' "$line" | grep -oE 'bookworm|trixie|forky|stable|oldstable' | head -n1)
+        version=$(printf '%s' "$line" | grep -oE 'debian-[0-9]+' | head -n1 | grep -oE '[0-9]+')
+        if [[ -n "$suite" && -n "$version" ]]; then
+            printf '%s %s\n' "$version" "$suite"
+        fi
+    done < <(printf '%s' "$finder" | grep 'genericcloud amd64') | sort -V | tail -n1 | {
+        read -r best_version best_suite
+        [[ -n "$best_version" && -n "$best_suite" ]] || exit 1
+        page=$(curl_get "https://cloud.debian.org/images/cloud/${best_suite}/latest/") || exit 1
+        image=$(printf '%s' "$page" | grep -oE "debian-${best_version}-genericcloud-amd64\.qcow2" | head -n1)
+        [[ -n "$image" ]] || exit 1
+        printf 'RESOLVED_URL=https://cloud.debian.org/images/cloud/%s/latest/%s\n' "$best_suite" "$image"
+        printf 'RESOLVED_SUM=https://cloud.debian.org/images/cloud/%s/latest/SHA512SUMS\n' "$best_suite"
+    } | while IFS='=' read -r k v; do
+        case "$k" in
+            RESOLVED_URL) RESOLVED_URL="$v" ;;
+            RESOLVED_SUM) RESOLVED_SUM="$v" ;;
+        esac
+    done
+    [[ -n "${RESOLVED_URL:-}" ]] || return 1
 }
 
 resolve_ubuntu() {
-    local releases_html codename release_page latest_path version
-    releases_html=$(curl -fsSL "https://cloud-images.ubuntu.com/releases/") || return 1
-    latest_path=$(printf '%s' "$releases_html" | grep -oE 'releases/[a-z]+/release/' | sort -u | while read -r p; do
-        codename=$(basename "$(dirname "$p")")
-        release_page="https://cloud-images.ubuntu.com/${p}"
-        page=$(curl -fsSL "$release_page") || continue
-        version=$(printf '%s' "$page" | grep -oE 'ubuntu-[0-9]+\.[0-9]+-server-cloudimg-amd64\.img' | head -n1 | grep -oE '[0-9]+\.[0-9]+')
-        case "$version" in
-            *.04) printf '%s %s
-' "$version" "$p" ;;
-        esac
+    local page version rel_path
+    page=$(curl_get "https://cloud-images.ubuntu.com/") || return 1
+    rel_path=$(printf '%s' "$page" | grep -oE '[a-z]+/[^<]*Ubuntu Server [0-9]+\.[0-9]+ LTS' | grep -oE '^[a-z]+/' | sed 's:/$::' | while read -r suite; do
+        rel=$(curl_get "https://cloud-images.ubuntu.com/${suite}/") || continue
+        version=$(printf '%s' "$rel" | grep -oE 'ubuntu-[0-9]+\.[0-9]+-server-cloudimg-amd64\.img' | head -n1 | grep -oE '[0-9]+\.[0-9]+')
+        [[ "$version" == *.04 ]] && printf '%s %s\n' "$version" "$suite"
     done | sort -V | tail -n1 | awk '{print $2}')
-    [[ -z "$latest_path" ]] && return 1
-    RESOLVED_URL="https://cloud-images.ubuntu.com/${latest_path}ubuntu-$(curl -fsSL "https://cloud-images.ubuntu.com/${latest_path}" | grep -oE 'ubuntu-[0-9]+\.[0-9]+-server-cloudimg-amd64\.img' | head -n1 | sed 's/-server-cloudimg-amd64\.img//')-server-cloudimg-amd64.img"
-    RESOLVED_SUM="https://cloud-images.ubuntu.com/${latest_path}SHA256SUMS"
+    [[ -z "$rel_path" ]] && return 1
+    page=$(curl_get "https://cloud-images.ubuntu.com/${rel_path}/") || return 1
+    version=$(printf '%s' "$page" | grep -oE 'ubuntu-[0-9]+\.[0-9]+-server-cloudimg-amd64\.img' | head -n1 | grep -oE '[0-9]+\.[0-9]+')
+    [[ -z "$version" ]] && return 1
+    RESOLVED_URL="https://cloud-images.ubuntu.com/${rel_path}/ubuntu-${version}-server-cloudimg-amd64.img"
+    RESOLVED_SUM="https://cloud-images.ubuntu.com/${rel_path}/SHA256SUMS"
 }
 
 resolve_rocky() {
@@ -104,7 +116,7 @@ resolve_rocky() {
 
 resolve_coreos() {
     local json url sum
-    json=$(curl -fsSL "https://builds.coreos.fedoraproject.org/streams/stable.json") || return 1
+    json=$(curl_get "https://builds.coreos.fedoraproject.org/streams/stable.json") || return 1
     url=$(printf '%s' "$json" | python3 -c 'import sys, json; d=json.load(sys.stdin); print(d["architectures"]["x86_64"]["artifacts"]["qemu"]["formats"]["qcow2.xz"]["disk"]["location"])') || return 1
     sum=$(printf '%s' "$json" | python3 -c 'import sys, json; d=json.load(sys.stdin); print(d["architectures"]["x86_64"]["artifacts"]["qemu"]["formats"]["qcow2.xz"]["disk"]["sha256"])') || return 1
     [[ -z "$url" || "$url" == "null" ]] && return 1
@@ -115,12 +127,12 @@ resolve_coreos() {
 
 resolve_fedora() {
     local html rel base img csum
-    html=$(curl -fsSL "https://fedoraproject.org/cloud/download/") || return 1
+    html=$(curl_get "https://fedoraproject.org/cloud/download/") || return 1
     rel=$(printf '%s' "$html" | grep -oE 'Fedora Cloud [0-9]+' | head -n1 | grep -oE '[0-9]+')
     [[ -z "$rel" ]] && return 1
     base="https://download.fedoraproject.org/pub/fedora/linux/releases/${rel}/Cloud/x86_64/images"
-    img=$(curl -fsSL "$base/" | grep -oE "Fedora-Cloud-Base-Generic(-[0-9A-Za-z._-]+)?\.x86_64\.qcow2|Fedora-Cloud-Base-Generic\.x86_64-${rel}-[0-9A-Za-z._-]+\.qcow2|Fedora-Cloud-Base-Generic-${rel}-[0-9A-Za-z._-]+\.x86_64\.qcow2" | head -n1)
-    csum=$(curl -fsSL "$base/" | grep -oE "Fedora-Cloud-[A-Za-z0-9._-]*CHECKSUM" | head -n1)
+    img=$(curl_get "$base/" | grep -oE "Fedora-Cloud-Base-Generic-${rel}-[A-Za-z0-9._-]+\.x86_64\.qcow2" | head -n1)
+    csum=$(curl_get "$base/" | grep -oE "Fedora-Cloud-[A-Za-z0-9._-]*CHECKSUM" | head -n1)
     [[ -z "$img" || -z "$csum" ]] && return 1
     RESOLVED_URL="$base/$img"
     RESOLVED_SUM="$base/$csum"
@@ -134,7 +146,7 @@ resolve_arch() {
 resolve_alpine() {
     local index file base
     base="https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/cloud"
-    index=$(curl -fsSL "$base/") || return 1
+    index=$(curl_get "$base/") || return 1
     file=$(printf '%s' "$index" | grep -oE 'generic_alpine-[0-9.]+-x86_64-bios-cloudinit(-metal)?-r[0-9]+\.qcow2' | sort -V | tail -n1)
     [[ -z "$file" ]] && return 1
     RESOLVED_URL="$base/$file"
