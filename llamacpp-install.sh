@@ -8,7 +8,6 @@ SERVICE_NAME="${SERVICE_NAME:-llama-server.service}"
 SERVICE_PORT="${SERVICE_PORT:-8080}"
 DEFAULT_MODEL_FILE="${DEFAULT_MODEL_FILE:-$MODEL_DIR/model.gguf}"
 HOST="${HOST:-0.0.0.0}"
-CUDA_KEYRING_URL="${CUDA_KEYRING_URL:-https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/cuda-keyring_1.1-1_all.deb}"
 SOURCES_FILE="${SOURCES_FILE:-/etc/apt/sources.list.d/debian.sources}"
 
 log() { printf '[*] %s\n' "$*"; }
@@ -34,35 +33,40 @@ path.write_text('\n'.join(lines) + '\n')
 PYEOF
 }
 
-apt_install_base() {
-  log "Installing base packages..."
+install_debian_nvidia_cuda() {
+  log "Installing Debian-packaged NVIDIA driver, CUDA toolkit, and build prerequisites..."
   sudo apt update
-  sudo apt install -y linux-headers-$(uname -r) build-essential dkms git cmake ninja-build curl ca-certificates pkg-config
+  sudo apt install -y \
+    linux-headers-$(uname -r) \
+    build-essential \
+    dkms \
+    mokutil \
+    git \
+    cmake \
+    ninja-build \
+    pkg-config \
+    ca-certificates \
+    curl \
+    python3 \
+    python3-pip \
+    python3-venv \
+    nvidia-driver \
+    nvidia-cuda-toolkit \
+    nvidia-cuda-dev
 }
 
-ensure_nvidia_driver() {
-  if ! command -v nvidia-smi >/dev/null 2>&1; then
-    log "Installing NVIDIA driver..."
-    sudo apt install -y nvidia-driver
-  fi
+install_hf_cli() {
+  log "Installing Hugging Face CLI..."
+  python3 -m pip install --user --upgrade huggingface_hub[cli]
+}
+
+check_cuda_stack() {
   require_cmd nvidia-smi
+  require_cmd nvcc
   log "nvidia-smi output:"
   nvidia-smi || true
-}
-
-ensure_cuda_repo() {
-  if ! dpkg -l | grep -q '^ii[[:space:]]\+cuda-keyring[[:space:]]'; then
-    log "Adding NVIDIA CUDA repository..."
-    curl -fsSL "$CUDA_KEYRING_URL" -o /tmp/cuda-keyring.deb
-    sudo dpkg -i /tmp/cuda-keyring.deb
-    rm -f /tmp/cuda-keyring.deb
-    sudo apt update
-  fi
-}
-
-install_cuda_toolkit() {
-  log "Installing CUDA toolkit..."
-  sudo apt install -y cuda-toolkit
+  log "nvcc version:"
+  nvcc --version || true
 }
 
 clone_or_update_llama() {
@@ -77,7 +81,10 @@ clone_or_update_llama() {
 
 build_llama() {
   log "Building llama.cpp with CUDA support..."
-  cmake -S "$LLAMA_DIR" -B "$LLAMA_DIR/build" -G Ninja -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release
+  cmake -S "$LLAMA_DIR" -B "$LLAMA_DIR/build" -G Ninja \
+    -DGGML_CUDA=ON \
+    -DCMAKE_CUDA_COMPILER=/usr/bin/nvcc \
+    -DCMAKE_BUILD_TYPE=Release
   cmake --build "$LLAMA_DIR/build" --parallel "$(nproc)" --target llama-cli llama-server
 }
 
@@ -105,7 +112,6 @@ EOF2
 enable_service() {
   log "Reloading user systemd daemon..."
   systemctl --user daemon-reload
-  log "Enabling and starting $SERVICE_NAME ..."
   systemctl --user enable --now "$SERVICE_NAME"
 }
 
@@ -116,13 +122,14 @@ Manual server start example:
   "$LLAMA_DIR/build/bin/llama-server" --host "$HOST" --port "$SERVICE_PORT" --model "$DEFAULT_MODEL_FILE"
 
 Suggested model download command:
-  huggingface-cli download REPO_ID FILENAME --local-dir "$MODEL_DIR"
+  ~/.local/bin/huggingface-cli download REPO_ID FILENAME --local-dir "$MODEL_DIR"
 
 User service management:
   systemctl --user status $SERVICE_NAME
   systemctl --user restart $SERVICE_NAME
   journalctl --user -u $SERVICE_NAME -f
 
+Secure Boot note: only relevant if Secure Boot is enabled inside the VM's guest firmware. If Secure Boot is off, you can ignore this. If it is on, Debian's NVIDIA DKMS modules may require MOK enrollment/signing before nvidia-smi works.
 If you want the user service to survive logout:
   sudo loginctl enable-linger "$USER"
 EOF2
@@ -130,10 +137,9 @@ EOF2
 
 main() {
   ensure_nonfree_components
-  apt_install_base
-  ensure_nvidia_driver
-  ensure_cuda_repo
-  install_cuda_toolkit
+  install_debian_nvidia_cuda
+  install_hf_cli
+  check_cuda_stack
   clone_or_update_llama
   build_llama
   write_service

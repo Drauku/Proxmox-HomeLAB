@@ -7,6 +7,7 @@ SERVICE_NAME="${SERVICE_NAME:-vllm-server.service}"
 SERVICE_PORT="${SERVICE_PORT:-8000}"
 DEFAULT_MODEL="${DEFAULT_MODEL:-meta-llama/Llama-3.1-8B-Instruct}"
 HOST="${HOST:-0.0.0.0}"
+SOURCES_FILE="${SOURCES_FILE:-/etc/apt/sources.list.d/debian.sources}"
 
 log() { printf '[*] %s\n' "$*"; }
 warn() { printf '[!] %s\n' "$*"; }
@@ -14,10 +15,39 @@ die() { printf '[-] %s\n' "$*" >&2; exit 1; }
 
 require_cmd() { command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"; }
 
-ensure_packages() {
-  log "Installing required packages..."
+ensure_nonfree_components() {
+  [[ -f "$SOURCES_FILE" ]] || die "$SOURCES_FILE not found. This script expects Debian deb822 sources."
+  log "Ensuring Debian sources include contrib, non-free, and non-free-firmware..."
+  sudo python3 - "$SOURCES_FILE" <<'PYEOF'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+lines = []
+for line in text.splitlines():
+    if line.startswith('Components:'):
+        lines.append('Components: main contrib non-free non-free-firmware')
+    else:
+        lines.append(line)
+path.write_text('\n'.join(lines) + '\n')
+PYEOF
+}
+
+ensure_debian_nvidia_stack() {
+  log "Installing Debian-packaged NVIDIA driver, CUDA toolkit, and build prerequisites..."
   sudo apt update
-  sudo apt install -y python3 python3-venv python3-pip build-essential curl ca-certificates
+  sudo apt install -y \
+    linux-headers-$(uname -r) \
+    build-essential \
+    dkms \
+    mokutil \
+    git \
+    curl \
+    ca-certificates \
+    python3 \
+    python3-venv \
+    python3-pip \
+    nvidia-driver \
+    nvidia-cuda-toolkit
 }
 
 require_nvidia() {
@@ -62,6 +92,8 @@ ensure_venv() {
   source "$VENV_DIR/bin/activate"
   log "Upgrading pip..."
   pip install --upgrade pip setuptools wheel
+  log "Installing Hugging Face CLI support in the venv..."
+  pip install --upgrade huggingface_hub[cli]
 }
 
 install_pytorch_and_vllm() {
@@ -138,6 +170,7 @@ Manual server start example:
     --model "$DEFAULT_MODEL"
 
 Suggested model download command:
+  source "$VENV_DIR/bin/activate"
   huggingface-cli download "$DEFAULT_MODEL"
 
 User service management:
@@ -145,14 +178,17 @@ User service management:
   systemctl --user restart $SERVICE_NAME
   journalctl --user -u $SERVICE_NAME -f
 
+Secure Boot note: only relevant if Secure Boot is enabled inside the VM's guest firmware. If Secure Boot is off, you can ignore this. If it is on, Debian's NVIDIA DKMS modules may require MOK enrollment/signing before nvidia-smi works.
 If you want the user service to survive logout:
   sudo loginctl enable-linger "$USER"
 EOF2
 }
 
 main() {
-  ensure_packages
+  ensure_nonfree_components
+  ensure_debian_nvidia_stack
   require_nvidia
+  require_cmd nvcc
   CUDA_DRIVER_VER="$(get_cuda_driver_version || true)"
   if [[ -n "${CUDA_DRIVER_VER:-}" ]]; then
     log "Detected CUDA driver version: $CUDA_DRIVER_VER"
