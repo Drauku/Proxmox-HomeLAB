@@ -142,6 +142,29 @@ resolve_distro() {
     esac
 }
 
+confirm_template() {
+    local distro_name="$1"
+    local vmid="$2"
+    local name="$3"
+    local image="$4"
+    local url="$5"
+
+    echo ""
+    echo "${ylw}Ready to create template:${rst} $distro_name"
+    echo "  VMID:     $vmid"
+    echo "  Name:     $name"
+    echo "  Image:    $image"
+    echo "  URL:      $url"
+    while true; do
+        read -r -p "Approve this template task? (Y/n): " choice
+        case "$choice" in
+        ''|y|Y) return 0 ;;
+        n|N) echo "${ylw}Skipped $distro_name by user choice.${rst}"; return 1 ;;
+        *) echo "Please answer Y or n." ;;
+        esac
+    done
+    }
+
 verify_checksum() {
     local file="$1"
     local input="${2:-}"
@@ -275,6 +298,9 @@ download_distro() {
             if ! resolve_distro "${params[4]}"; then
                 echo "${red}Failed to resolve latest image for $distro_name.${rst}"
                 return 1
+            fi
+            if ! confirm_template "$distro_name" "${params[1]}" "${params[2]}" "${params[3]}" "$RESOLVED_URL"; then
+                return 0
             fi
             create_template "${params[1]}" "${params[2]}" "${params[3]}" "$RESOLVED_URL" "$RESOLVED_SUM"
             return
