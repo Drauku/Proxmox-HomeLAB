@@ -94,6 +94,13 @@ ensure_venv() {
   pip install --upgrade pip setuptools wheel
   log "Installing Hugging Face CLI support in the venv..."
   pip install --upgrade huggingface_hub[cli]
+  if command -v hf >/dev/null 2>&1; then
+    HF_CMD="hf"
+  elif command -v huggingface-cli >/dev/null 2>&1; then
+    HF_CMD="huggingface-cli"
+  else
+    HF_CMD=""
+  fi
 }
 
 install_pytorch_and_vllm() {
@@ -171,7 +178,7 @@ Manual server start example:
 
 Suggested model download command:
   source "$VENV_DIR/bin/activate"
-  huggingface-cli download "$DEFAULT_MODEL"
+  $HF_CMD download "$DEFAULT_MODEL"
 
 User service management:
   systemctl --user status $SERVICE_NAME

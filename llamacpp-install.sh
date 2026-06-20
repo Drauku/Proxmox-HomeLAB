@@ -50,14 +50,22 @@ install_debian_nvidia_cuda() {
     python3 \
     python3-pip \
     python3-venv \
+    pipx \
     nvidia-driver \
     nvidia-cuda-toolkit \
     nvidia-cuda-dev
 }
 
 install_hf_cli() {
-  log "Installing Hugging Face CLI..."
-  python3 -m pip install --user --upgrade huggingface_hub[cli]
+  log "Installing Hugging Face CLI with pipx..."
+  pipx install --force huggingface_hub
+  if command -v hf >/dev/null 2>&1; then
+    HF_CMD="hf"
+  elif command -v huggingface-cli >/dev/null 2>&1; then
+    HF_CMD="huggingface-cli"
+  else
+    HF_CMD=""
+  fi
 }
 
 check_cuda_stack() {
@@ -122,7 +130,7 @@ Manual server start example:
   "$LLAMA_DIR/build/bin/llama-server" --host "$HOST" --port "$SERVICE_PORT" --model "$DEFAULT_MODEL_FILE"
 
 Suggested model download command:
-  ~/.local/bin/huggingface-cli download REPO_ID FILENAME --local-dir "$MODEL_DIR"
+  $HF_CMD download REPO_ID FILENAME --local-dir "$MODEL_DIR"
 
 User service management:
   systemctl --user status $SERVICE_NAME
