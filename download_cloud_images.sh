@@ -1,21 +1,20 @@
 #!/bin/bash
+set -u
 
-# Original logic from https://www.apalrd.net/posts/2023/pve_cloud/
+# Based on the original approach from:
+# https://www.apalrd.net/posts/2023/pve_cloud/
 
-# Colors using tput fallback
-red=$(tput setaf 1)
-grn=$(tput setaf 2)
-ylw=$(tput setaf 3)
-rst=$(tput sgr0)
+red=$(tput setaf 1 2>/dev/null || true)
+grn=$(tput setaf 2 2>/dev/null || true)
+ylw=$(tput setaf 3 2>/dev/null || true)
+rst=$(tput sgr0 2>/dev/null || true)
 
-# Variables
 export ssh_keyfile="/etc/pve/priv/authorized_keys"
 export username="${2:-admin}"
 storage=$(pvesm status | awk '/local-/{print $1; exit}')
 vm_confs="/etc/pve/qemu-server"
 vm_image="/var/lib/vz/template/iso"
 
-# For static IP address, not used until template is closed
 ip_addr="192.168.186.100"
 ip_cidr="${ip_addr}/24"
 netmask="255.255.255.0"
@@ -25,14 +24,23 @@ dns1="9.9.9.9"
 dns2="1.1.1.1"
 
 # Distro definitions
+# format:
+# distro;vmid;template-name;local-image-name;image-url;checksum-or-checksum-url
+# Notes:
+# - Debian uses the stable 'latest' bookworm path.
+# - Ubuntu uses current Noble LTS path.
+# - Rocky 10 currently publishes GenericCloud Base under vault/10.0.
+# - Fedora uses the current stable release shown on Fedora Cloud download page (44 at time of writing).
+# - Arch uses the current mirror filename cloudimg, not cloudinit.
+# - Alpine uses latest-stable NoCloud BIOS qcow2 for Proxmox/KVM.
 distros=(
-    "debian;9013;tmpl-debian-13;debian-13.qcow2;https://cloud.debian.org/images/cloud/bookworm/20260210-2384/debian-12-genericcloud-amd64-20260210-2384.qcow2;e5d776b9de352c89fbad4baec8bfd38a35c5905114a5f3b108946348cb44d869396d22e4a837a43afee4b11363d4759c358fb3e8a7cd07fa743ed6b663784fed"
-    "ubuntu;9025;tmpl-ubuntu-25;ubuntu-25-04.img;https://cloud-images.ubuntu.com/releases/plucky/release/ubuntu-25.04-server-cloudimg-amd64.img;534cbf0c44e86862535502f853829cefb771d19991892a31d14827d985829612"
-    "rocky;9110;tmpl-rocky-10;rocky-10.qcow2;https://dl.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base.latest.x86_64.qcow2;28628abf08a134c6f9e1eccbcac3f2898715919a6da294ae2c6cd66d6bc347ad"
-    "coreos;9123;tmpl-coreos-43;coreos.qcow2.xz;https://builds.coreos.fedoraproject.org/prod/streams/stable/builds/43.20260119.3.1/x86_64/fedora-coreos-43.20260119.3.1-qemu.x86_64.qcow2.xz;76f1d1c22d09ac27a6ff2c78fc9418d82307f23a9fd558e40a289ff5a3212bcd"
-    "fedora;9143;tmpl-fedora-43;fedora-43.qcow2;https://download.fedoraproject.org/pub/fedora/linux/releases/43/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-43-1.6.x86_64.qcow2;846574c8a97cd2d8dc1f231062d73107cc85cbbbda56335e264a46e3a6c8ab2f"
-    "arch;9200;tmpl-arch-latest;arch-latest.qcow2;https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudinit.qcow2;https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudinit.qcow2.sha256"
-    "alpine;9319;tmpl-alpine-latest;alpine-latest.qcow2;https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/cloud/alpine-standard-3.19.1-x86_64-cloudinit-generic.qcow2;"
+    "arch;9000;tmpl-arch-latest;arch-latest.qcow2;https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2;https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2.SHA256"
+    "alpine;9022;tmpl-alpine-3-22;alpine-3.22.qcow2;https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/cloud/nocloud_alpine-virt-3.22.2-x86_64-bios-cloudinit-r0.qcow2;"
+    "debian;9113;tmpl-debian-12;debian-12.qcow2;https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2;https://cloud.debian.org/images/cloud/bookworm/latest/SHA512SUMS"
+    "ubuntu;9125;tmpl-ubuntu-25;ubuntu-25-04.img;https://cloud-images.ubuntu.com/releases/plucky/release/ubuntu-25.04-server-cloudimg-amd64.img;534cbf0c44e86862535502f853829cefb771d19991892a31d14827d985829612"
+    "rocky;9210;tmpl-rocky-10;rocky-10.qcow2;https://dl.rockylinux.org/vault/rocky/10.0/images/x86_64/Rocky-10-GenericCloud-Base.latest.x86_64.qcow2;https://dl.rockylinux.org/vault/rocky/10.0/images/x86_64/Rocky-10-GenericCloud-Base.latest.x86_64.qcow2.CHECKSUM"
+    "coreos;9223;tmpl-coreos-stable;coreos.qcow2.xz;https://builds.coreos.fedoraproject.org/prod/streams/stable/builds/43.20260119.3.1/x86_64/fedora-coreos-43.20260119.3.1-qemu.x86_64.qcow2.xz;76f1d1c22d09ac27a6ff2c78fc9418d82307f23a9fd558e40a289ff5a3212bcd"
+    "fedora;9244;tmpl-fedora-44;fedora-44.qcow2;https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-20260424.n.0.x86_64.qcow2;https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-images-44-x86_64-20260424.n.0-CHECKSUM"
 )
 
 show_help() {
@@ -42,16 +50,12 @@ show_help() {
     echo "  ${grn}Specific distro:${rst} $0 debian"
     echo "  ${grn}Custom user:${rst} $0 all newuser"
     echo "  ${grn}Available distros:${rst} all, $(get_distro_names)"
-    echo "  ${grn}One-off input:${rst} $0 900 \"tmpl-custom\" \"image.qcow2\" \"https://example.com/image.qcow2\""
+    echo "  ${grn}One-off input:${rst} $0 900 \"tmpl-custom\" \"image.qcow2\" \"https://example.com/image.qcow2\" [checksum]"
 }
 
-webtest(){
-    local target="cloudflare.com"
-    if curl -sf --connect-timeout 5 -o /dev/null "https://$target"; then
-        return 0
-    else
-        return 1
-    fi
+webtest() {
+  local target="cloudflare.com"
+  curl -sf --connect-timeout 5 -o /dev/null "https://$target"
 }
 
 manage_existing() {
@@ -78,26 +82,24 @@ verify_checksum() {
     local file="$1"
     local input="${2:-}"
 
-    # Return success immediately if no checksum provided
     [[ -z "$input" ]] && echo "${ylw}No checksum provided. Skipping verification.${rst}" && return 0
 
     local expected_sum=""
 
-    # Detect if input is a URL
     if [[ "$input" =~ ^https?:// ]]; then
         echo "Fetching checksum file from remote..."
-        local sum_file=$(mktemp)
+        local sum_file
+        sum_file=$(mktemp)
 
-        # Download the checksum file
         if ! wget -q "$input" -O "$sum_file"; then
             echo "${red}Failed to download checksum file.${rst}"
             rm -f "$sum_file"
             return 1
         fi
 
-        # Find the line matching the filename
-        local filename=$(basename "$file")
-        local match=$(grep "$filename" "$sum_file")
+        local filename match
+        filename=$(basename "$file")
+        match=$(grep -F "$filename" "$sum_file" | head -n1)
         rm -f "$sum_file"
 
         if [[ -z "$match" ]]; then
@@ -105,39 +107,33 @@ verify_checksum() {
             return 1
         fi
 
-        # Extract hash: Handle BSD format (Fedora) vs Standard (Debian/Ubuntu)
         if [[ "$match" == *" = "* ]]; then
-            # BSD format: SHA256 (filename) = <hash>
             expected_sum=$(echo "$match" | awk -F ' = ' '{print $2}')
         else
-            # Standard format: <hash>  filename
             expected_sum=$(echo "$match" | awk '{print $1}')
         fi
         echo "Found hash: ${expected_sum:0:12}..."
     else
-        # Input is a raw hash string
         expected_sum="$input"
     fi
 
-    # Determine Algorithm based on hash length
     local cmd=""
     case ${#expected_sum} in
         64)  cmd="sha256sum" ;;
         128) cmd="sha512sum" ;;
-        *)   echo "${ylw}Unknown hash length (${#expected_sum}). Skipping.${rst}"; return 0 ;;
+        *) echo "${ylw}Unknown hash length (${#expected_sum}). Skipping.${rst}"; return 0 ;;
     esac
 
-    # Perform Verification
     if echo "$expected_sum  $file" | $cmd --check --status; then
         echo "${grn}Checksum verified ($cmd).${rst}"
         return 0
     else
-        echo "${red}Checksum Mismatch!${rst}"
+        echo "${red}Checksum mismatch!${rst}"
         return 1
     fi
 }
 
-create_template(){ # syntax: create_template <vmid> <name> <image> <url> [checksum]
+create_template() {
     local vmid="$1"
     local name="$2"
     local image="$3"
@@ -147,13 +143,15 @@ create_template(){ # syntax: create_template <vmid> <name> <image> <url> [checks
     local attempt=1
     local success=false
 
-    if ! manage_existing "$vmid"; then return; fi
+    if ! manage_existing "$vmid"; then return 0; fi
     if ! webtest; then
-        echo "${red}CRITICAL${rst}: DNS Resolution or Internet failure."
+        echo "${red}CRITICAL${rst}: DNS resolution or internet failure."
         return 1
     fi
 
-    # --- Download & Verify Loop ---
+    mkdir -p "$vm_image"
+    cd "$vm_image" || return 1
+
     while (( attempt <= max_attempts )); do
         echo "Attempt $attempt of $max_attempts: Downloading $image..."
         if wget -q --show-progress "$url" -O "$image"; then
@@ -176,11 +174,9 @@ create_template(){ # syntax: create_template <vmid> <name> <image> <url> [checks
         return 1
     fi
 
-    # --- Proxmox Configuration Logic ---
     echo "Creating template $name ($vmid)"
     qm create "$vmid" --name "$name" --ostype l26
 
-    # Attempt to import disk
     echo "Importing disk to $storage..."
     if ! qm set "$vmid" --scsi0 "${storage}:0,import-from=$(pwd)/$image,discard=on"; then
         echo "${ylw}Import failed.${rst} Checking if decompression is needed..."
@@ -197,12 +193,11 @@ create_template(){ # syntax: create_template <vmid> <name> <image> <url> [checks
         if ! qm set "$vmid" --scsi0 "${storage}:0,import-from=$(pwd)/$image,discard=on"; then
             echo "${red}Failed to import disk even after extraction.${rst} Cleanup..."
             rm -f "$image"
-            qm destroy "$vmid"
+            qm destroy "$vmid" --purge >/dev/null 2>&1 || true
             return 1
         fi
     fi
 
-    # Continue with remaining configuration
     qm set "$vmid" --net0 virtio,bridge=vmbr0
     qm set "$vmid" --serial0 socket --vga serial0
     qm set "$vmid" --memory 1024 --cores 2 --cpu x86-64-v2-AES
@@ -240,9 +235,7 @@ get_distro_names() {
 
 is_distro() {
     local name="$1"
-    if [ "$name" == "all" ]; then
-        return 0
-    fi
+    [[ "$name" == "all" ]] && return 0
     for distro_data in "${distros[@]}"; do
         if [[ "$distro_data" == "$name"* ]]; then
             return 0
@@ -251,7 +244,7 @@ is_distro() {
     return 1
 }
 
-main(){
+main() {
     if [ "$#" -ge 4 ] && ! is_distro "$1"; then
         create_template "$1" "$2" "$3" "$4" "$5"
         exit 0
@@ -266,7 +259,6 @@ main(){
         u|U )
             while true; do
                 read -r -p "New username (alphanumeric, starts with letter): " new_username
-                # Regex: Starts with letter, followed by lowercase letters, numbers, or hyphens
                 if [[ "$new_username" =~ ^[a-z][a-z0-9-]*$ ]]; then
                     username="$new_username"
                     echo "Username updated to: $username"
