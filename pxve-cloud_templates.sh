@@ -18,11 +18,8 @@ vm_image="/var/lib/vz/template/iso"
 DEFAULT_VGA="default"
 DEFAULT_SERIAL="socket"
 
-# format:
-# distro;vmid;template-name;local-image-name;resolver-key
-# URL/checksum are resolved at runtime whenever practical.
 distros=(
-    "debian;9013;tmpl-debian-12;debian-12.qcow2;debian"
+    "debian;9013;tmpl-debian-13;debian-13.qcow2;debian"
     "ubuntu;9026;tmpl-ubuntu-26-04;ubuntu-26-04.img;ubuntu"
     "rocky;9110;tmpl-rocky-10;rocky-10.qcow2;rocky"
     "coreos;9123;tmpl-coreos-stable;coreos.qcow2.xz;coreos"
@@ -34,11 +31,11 @@ distros=(
 show_help() {
     echo "${ylw}Usage:${rst} $0 [all|distro] [username]"
     echo ""
-    echo "  ${grn}No arguments or 'all':${rst} Runs default batch."
-    echo "  ${grn}Specific distro:${rst} $0 debian"
-    echo "  ${grn}Custom user:${rst} $0 all newuser"
-    echo "  ${grn}Available distros:${rst} all, $(get_distro_names)"
-    echo "  ${grn}One-off input:${rst} $0 900 \"tmpl-custom\" \"image.qcow2\" \"https://example.com/image.qcow2\" [checksum]"
+    echo "    ${grn}No arguments or 'all':${rst} Runs default batch."
+    echo "    ${grn}Specific distro:${rst} $0 debian"
+    echo "    ${grn}Custom user:${rst} $0 all newuser"
+    echo "    ${grn}Available distros:${rst} all, $(get_distro_names)"
+    echo "    ${grn}One-off input:${rst} $0 900 \"tmpl-custom\" \"image.qcow2\" \"https://example.com/image.qcow2\" [checksum]"
 }
 
 webtest() {
@@ -49,14 +46,14 @@ manage_existing() {
     local vmid="$1"
     if [[ -f "$vm_confs/$vmid.conf" ]]; then
         echo "${ylw}Template/VM $vmid already exists.${rst}"
-        read -p "Would you like to destroy and recreate it? (y/N): " choice
+        read -r -p "Would you like to destroy and recreate it? (y/N): " choice
         case "$choice" in
-            y|Y )
+            y|Y)
                 echo "Destroying template $vmid..."
                 qm destroy "$vmid" --purge
                 return 0
                 ;;
-            * )
+            *)
                 echo "Skipping $vmid."
                 return 1
                 ;;
@@ -66,27 +63,43 @@ manage_existing() {
 }
 
 resolve_debian() {
-    RESOLVED_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
-    RESOLVED_SUM="https://cloud.debian.org/images/cloud/bookworm/latest/SHA512SUMS"
+    local root_html suite suite_path page version image_prefix
+    root_html=$(curl -fsSL "https://cloud.debian.org/images/cloud/") || return 1
+    suite_path=$(printf '%s' "$root_html" | grep -oE 'href="[a-z]+/"' | cut -d'"' -f2 | sed 's:/$::' | while read -r suite; do
+        page=$(curl -fsSL "https://cloud.debian.org/images/cloud/${suite}/latest/") || continue
+        version=$(printf '%s' "$page" | grep -oE 'debian-[0-9]+-genericcloud-amd64\.qcow2' | head -n1 | grep -oE '[0-9]+')
+        [[ -n "$version" ]] && printf '%s %s
+' "$version" "$suite"
+    done | sort -V | tail -n1 | awk '{print $2}')
+    [[ -z "$suite_path" ]] && return 1
+    page=$(curl -fsSL "https://cloud.debian.org/images/cloud/${suite_path}/latest/") || return 1
+    image_prefix=$(printf '%s' "$page" | grep -oE 'debian-[0-9]+-genericcloud-amd64' | head -n1)
+    [[ -z "$image_prefix" ]] && return 1
+    RESOLVED_URL="https://cloud.debian.org/images/cloud/${suite_path}/latest/${image_prefix}.qcow2"
+    RESOLVED_SUM="https://cloud.debian.org/images/cloud/${suite_path}/latest/SHA512SUMS"
 }
 
 resolve_ubuntu() {
-    local base html
-    base="https://cloud-images.ubuntu.com/releases/resolute/release/"
-    html=$(curl -fsSL "$base") || return 1
-
-    if printf '%s' "$html" | grep -q 'ubuntu-26.04-server-cloudimg-amd64.img'; then
-        RESOLVED_URL="${base}ubuntu-26.04-server-cloudimg-amd64.img"
-        RESOLVED_SUM="${base}SHA256SUMS"
-    else
-        RESOLVED_URL="https://cloud-images.ubuntu.com/releases/plucky/release/ubuntu-25.04-server-cloudimg-amd64.img"
-        RESOLVED_SUM="https://cloud-images.ubuntu.com/releases/plucky/release/SHA256SUMS"
-    fi
+    local releases_html codename release_page latest_path version
+    releases_html=$(curl -fsSL "https://cloud-images.ubuntu.com/releases/") || return 1
+    latest_path=$(printf '%s' "$releases_html" | grep -oE 'releases/[a-z]+/release/' | sort -u | while read -r p; do
+        codename=$(basename "$(dirname "$p")")
+        release_page="https://cloud-images.ubuntu.com/${p}"
+        page=$(curl -fsSL "$release_page") || continue
+        version=$(printf '%s' "$page" | grep -oE 'ubuntu-[0-9]+\.[0-9]+-server-cloudimg-amd64\.img' | head -n1 | grep -oE '[0-9]+\.[0-9]+')
+        case "$version" in
+            *.04) printf '%s %s
+' "$version" "$p" ;;
+        esac
+    done | sort -V | tail -n1 | awk '{print $2}')
+    [[ -z "$latest_path" ]] && return 1
+    RESOLVED_URL="https://cloud-images.ubuntu.com/${latest_path}ubuntu-$(curl -fsSL "https://cloud-images.ubuntu.com/${latest_path}" | grep -oE 'ubuntu-[0-9]+\.[0-9]+-server-cloudimg-amd64\.img' | head -n1 | sed 's/-server-cloudimg-amd64\.img//')-server-cloudimg-amd64.img"
+    RESOLVED_SUM="https://cloud-images.ubuntu.com/${latest_path}SHA256SUMS"
 }
 
 resolve_rocky() {
-    RESOLVED_URL="https://dl.rockylinux.org/vault/rocky/10.0/images/x86_64/Rocky-10-GenericCloud-Base.latest.x86_64.qcow2"
-    RESOLVED_SUM="https://dl.rockylinux.org/vault/rocky/10.0/images/x86_64/Rocky-10-GenericCloud-Base.latest.x86_64.qcow2.CHECKSUM"
+    RESOLVED_URL="https://dl.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base.latest.x86_64.qcow2"
+    RESOLVED_SUM="https://dl.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base.latest.x86_64.qcow2.CHECKSUM"
 }
 
 resolve_coreos() {
@@ -103,10 +116,10 @@ resolve_coreos() {
 resolve_fedora() {
     local html rel base img csum
     html=$(curl -fsSL "https://fedoraproject.org/cloud/download/") || return 1
-    rel=$(printf '%s' "$html" | grep -oE '/pub/fedora/linux/releases/[0-9]+/Cloud/x86_64/images/' | head -n1 | grep -oE '[0-9]+' | head -n1)
+    rel=$(printf '%s' "$html" | grep -oE 'Fedora Cloud [0-9]+' | head -n1 | grep -oE '[0-9]+')
     [[ -z "$rel" ]] && return 1
     base="https://download.fedoraproject.org/pub/fedora/linux/releases/${rel}/Cloud/x86_64/images"
-    img=$(curl -fsSL "$base/" | grep -oE "Fedora-Cloud-Base-Generic-${rel}-[A-Za-z0-9._-]+\.x86_64\.qcow2" | head -n1)
+    img=$(curl -fsSL "$base/" | grep -oE "Fedora-Cloud-Base-Generic(-[0-9A-Za-z._-]+)?\.x86_64\.qcow2|Fedora-Cloud-Base-Generic\.x86_64-${rel}-[0-9A-Za-z._-]+\.qcow2|Fedora-Cloud-Base-Generic-${rel}-[0-9A-Za-z._-]+\.x86_64\.qcow2" | head -n1)
     csum=$(curl -fsSL "$base/" | grep -oE "Fedora-Cloud-[A-Za-z0-9._-]*CHECKSUM" | head -n1)
     [[ -z "$img" || -z "$csum" ]] && return 1
     RESOLVED_URL="$base/$img"
@@ -156,13 +169,19 @@ confirm_template() {
     local name="$3"
     local image="$4"
     local url="$5"
+    local exists_status="no"
+
+    if [[ -f "$vm_confs/$vmid.conf" ]]; then
+        exists_status="yes"
+    fi
 
     echo ""
     echo "${ylw}Ready to create template:${rst} $distro_name"
-    echo "  VMID:  $vmid"
-    echo "  Name:  $name"
-    echo "  Image: $image"
-    echo "  URL:   $url"
+    echo "    VMID:             $vmid"
+    echo "    Name:             $name"
+    echo "    Image:            $image"
+    echo "    URL:              $url"
+    echo "    Already exists:   $exists_status"
     while true; do
         read -r -p "Approve this template task? (Y/n): " choice
         case "$choice" in
