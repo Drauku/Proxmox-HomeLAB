@@ -131,13 +131,26 @@ step_collect_input() {
     _prompt VMNAME  "VM name"               "HomeAssistant"
     _log PASS "VM name: ${VMNAME}"
 
-    # Storage — list available pools then validate
+    # Storage — list available pools, validate name, then check free space
     _log INFO "Available storage pools:"
     pvesm status | awk 'NR>1 {printf "        %-20s type=%-10s avail=%s\n", $1, $2, $5}' >&2
     while true; do
         _prompt STORAGE "Storage name (e.g. local-lvm, local-zfs)" ""
-        pvesm status | awk 'NR>1 {print $1}' | grep -qx "$STORAGE" && break
-        _log WARN "Storage '${STORAGE}' not found. Check the list above."
+        if ! pvesm status | awk 'NR>1 {print $1}' | grep -qx "$STORAGE"; then
+            _log WARN "Storage '${STORAGE}' not found. Check the list above."
+            continue
+        fi
+        # Check free space — pvesm avail column is in bytes; require >= 12 GB
+        local avail_bytes min_bytes avail_gb
+        avail_bytes=$(pvesm status | awk -v s="$STORAGE" '$1==s {print $5}')
+        min_bytes=$(( 12 * 1024 * 1024 * 1024 ))
+        if [[ -n "$avail_bytes" && "$avail_bytes" =~ ^[0-9]+$ && "$avail_bytes" -lt "$min_bytes" ]]; then
+            avail_gb=$(( avail_bytes / 1024 / 1024 / 1024 ))
+            _log WARN "Storage '${STORAGE}' only has ~${avail_gb} GB free (12 GB recommended)."
+            local _low_ans; read -rp "   Continue anyway? [y/N]: " _low_ans
+            [[ "${_low_ans,,}" == "y" ]] || continue
+        fi
+        break
     done
     _log PASS "Storage: ${STORAGE}"
 
@@ -150,8 +163,17 @@ step_collect_input() {
 
     # Network bridge + optional VLAN
     _log INFO "Available network bridges:"
-    ip link show | awk '/^[0-9]+: vmbr/{gsub(":",""); print "       ", $2}' >&2
-    _prompt BRIDGE  "Network bridge"        "vmbr0"
+    local available_bridges
+    available_bridges=$(ip link show | awk '/^[0-9]+: vmbr/{gsub(":",""); print $2}')
+    printf '%s\n' "$available_bridges" | awk '{print "       ", $1}' >&2
+    while true; do
+        _prompt BRIDGE "Network bridge" "vmbr0"
+        if printf '%s\n' "$available_bridges" | grep -qx "$BRIDGE"; then
+            break
+        fi
+        _log WARN "Bridge '${BRIDGE}' not found on this host. Available: $(printf '%s ' $available_bridges)"
+        _log WARN "Check the list above or verify with: ip link show"
+    done
     _log PASS "Bridge: ${BRIDGE}"
 
     _prompt VLAN_TAG "VLAN tag (leave blank for none / untagged)" ""
