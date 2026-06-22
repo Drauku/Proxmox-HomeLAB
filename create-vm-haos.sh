@@ -63,11 +63,24 @@ _die() { _log FAIL "$1"; exit 1; }
 # HELPERS
 # =============================================================================
 
-_confirm() {
-    local prompt="${1:-Continue?}"
-    local ans
-    read -rp "$(printf " %s%s?%s    >> %s [y/N]: " "${ylw}" "${bld}" "${rst}" "${prompt}")" ans
-    [[ "${ans,,}" == "y" ]] || { _log WARN "Aborted by user."; exit 0; }
+_confirm_yes() {
+    local prompt="${1:-Are you sure?}"
+    local reply
+    read -r -p "$(printf " %s%s?%s    >> %s [Y/n]: " "${ylw}" "${bld}" "${rst}" "${prompt}")" reply
+    case "${reply,,}" in
+        y|yes|"") return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+_confirm_no() {
+    local prompt="${1:-Are you sure?}"
+    local reply
+    read -r -p "$(printf " %s%s?%s    >> %s [y/N]: " "${ylw}" "${bld}" "${rst}" "${prompt}")" reply
+    case "${reply,,}" in
+        y|yes) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 _prompt() {
@@ -104,6 +117,10 @@ _ensure_cmd() {
     _check_cmd "$cmd" && return 0
     _log WARN "${cmd} not found — installing ${pkg}..."
     apt-get install -y "$pkg" -qq || _die "Failed to install ${pkg}."
+}
+
+_valid_mac() {
+    [[ "$1" =~ ^([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}$ ]]
 }
 
 # =============================================================================
@@ -157,8 +174,7 @@ step_collect_input() {
         if [[ -n "$avail_kib" && "$avail_kib" =~ ^[0-9]+$ && "$avail_kib" -lt "$min_kib" ]]; then
             avail_gib=$(( avail_kib / 1024 / 1024 ))
             _log WARN "Storage '${STORAGE}' only has ~${avail_gib} GiB free (12 GiB recommended)."
-            local _low_ans; read -rp "   Continue anyway? [y/N]: " _low_ans
-            if [[ "${_low_ans,,}" != "y" ]]; then
+            if ! _confirm_yes "Continue anyway?"; then
                 continue
             fi
         fi
@@ -175,8 +191,7 @@ step_collect_input() {
         fi
         if [[ "$RAM" -lt 2048 ]]; then
             _log WARN "Less than 2048 MB RAM may cause instability."
-            local _ram_ans; read -rp "   Continue anyway? [y/N]: " _ram_ans
-            if [[ "${_ram_ans,,}" != "y" ]]; then
+            if ! _confirm_yes "Continue anyway?"; then
                 continue
             fi
         fi
@@ -194,17 +209,35 @@ step_collect_input() {
     done
     _log PASS "Cores: ${CORES}"
 
-    # Network bridge — must exist on this host
-    _log INFO "Available network bridges:"
+    # MAC address — optional; leave blank to let Proxmox auto-generate one
+    while true; do
+        _prompt MACADDR "MAC address for the VM NIC (blank = auto-generate)" ""
+        if [[ -z "$MACADDR" ]]; then
+            _log INFO "No MAC provided — Proxmox will auto-generate one."
+            break
+        fi
+        if _valid_mac "$MACADDR"; then
+            MACADDR="${MACADDR,,}"
+            _log PASS "Requested MAC address: ${MACADDR}"
+            break
+        fi
+        _log WARN "MAC address must be in the form 52:54:00:12:34:56."
+    done
+
+    # Network bridge — read from Proxmox network config, not raw ip link output
+    _log INFO "Available network bridges from Proxmox config:"
     local available_bridges
-    available_bridges=$(ip link show | awk '/^[0-9]+: vmbr/{gsub(":",""); print $2}')
+    available_bridges=$(awk '
+        $1 == "iface" && $NF == "bridge" { print $2 }
+    ' /etc/network/interfaces /etc/network/interfaces.d/* 2>/dev/null | sort -u)
+    [[ -n "$available_bridges" ]] || _die "No Linux bridges were found in Proxmox network config."
     printf '%s\n' "$available_bridges" | awk '{print "       ", $1}' >&2
     while true; do
         _prompt BRIDGE "Network bridge" "vmbr0"
         if printf '%s\n' "$available_bridges" | grep -qx "$BRIDGE"; then
             break
         fi
-        _log WARN "Bridge '${BRIDGE}' not found. Available: $(printf '%s ' $available_bridges)"
+        _log WARN "Bridge '${BRIDGE}' not found in Proxmox network config. Available: $(printf '%s ' $available_bridges)"
     done
     _log PASS "Bridge: ${BRIDGE}"
 
@@ -222,7 +255,7 @@ step_collect_input() {
         _log WARN "VLAN tag must be an integer between 1 and 4094."
     done
 
-    _prompt HAOS_IP "IP address HAOS will use (for the final URL only)" "192.168.1.X"
+    _prompt HAOS_IP "Desired HAOS IP / DHCP reservation target (informational only)" "192.168.1.X"
     _log PASS "HAOS IP noted: ${HAOS_IP}"
 }
 
@@ -235,11 +268,12 @@ step_summary() {
     printf "   %-12s %s\n" "Storage:"  "$STORAGE"
     printf "   %-12s %s\n" "RAM:"      "${RAM} MB"
     printf "   %-12s %s\n" "Cores:"    "$CORES"
+    printf "   %-12s %s\n" "MAC:"      "${MACADDR:-auto}"
     printf "   %-12s %s\n" "Bridge:"   "$BRIDGE"
     printf "   %-12s %s\n" "VLAN:"     "$vlan_display"
     printf "   %-12s %s\n" "HAOS IP:"  "$HAOS_IP"
     printf "\n"
-    _confirm "Proceed with the above settings?"
+    _confirm_yes "Proceed with the above settings?"
 }
 
 step_download() {
@@ -259,7 +293,7 @@ step_download() {
     _log INFO "Latest HAOS version : ${HAOS_VERSION}"
     _log INFO "Download URL        : ${DOWNLOAD_URL}"
 
-    _confirm "Download HAOS ${HAOS_VERSION}?"
+    _confirm_yes "Download HAOS ${HAOS_VERSION}?"
     _log INFO "Downloading to ${TMPXZ}..."
     wget --progress=bar:force -O "$TMPXZ" "$DOWNLOAD_URL" 2>&1 || _die "Download failed."
     _log PASS "Download complete."
@@ -267,7 +301,7 @@ step_download() {
 
 step_extract() {
     _section "Step 5: Extract Image"
-    _confirm "Extract ${TMPXZ}?"
+    _confirm_yes "Extract ${TMPXZ}?"
     _log INFO "Extracting image..."
     unxz -v "$TMPXZ" || _die "Extraction failed."
     [[ -f "$TMPQCOW2" ]] || _die "Expected ${TMPQCOW2} after extraction but file not found."
@@ -276,10 +310,11 @@ step_extract() {
 
 step_create_vm() {
     _section "Step 6: Create VM"
-    _confirm "Create VM ${VMID} (${VMNAME})?"
+    _confirm_yes "Create VM ${VMID} (${VMNAME})?"
 
-    # Build net0 string — conditionally append tag= if VLAN is set
+    # Build net0 string — include MAC only if explicitly provided
     local net0="virtio,bridge=${BRIDGE}"
+    [[ -n "${MACADDR:-}" ]] && net0="virtio=${MACADDR},bridge=${BRIDGE}"
     [[ -n "${VLAN_TAG:-}" ]] && net0="${net0},tag=${VLAN_TAG}"
 
     _log INFO "Creating VM skeleton..."
@@ -296,12 +331,15 @@ step_create_vm() {
         --scsihw   virtio-scsi-pci \
         --onboot   1 \
         || _die "VM creation failed."
+    ACTUAL_MAC=$(qm config "$VMID" | awk -F'[=,]' '/^net0:/ {print $2; exit}')
+    [[ -n "${ACTUAL_MAC:-}" ]] || _log WARN "Could not read back the assigned MAC from qm config."
     _log PASS "VM ${VMID} created."
+    [[ -n "${ACTUAL_MAC:-}" ]] && _log PASS "Effective MAC address: ${ACTUAL_MAC}"
 }
 
 step_import_disk() {
     _section "Step 7: Import Disk"
-    _confirm "Import HAOS disk into storage '${STORAGE}'?"
+    _confirm_yes "Import HAOS disk into storage '${STORAGE}'?"
     _log INFO "Importing disk (this may take a moment)..."
     qm importdisk "$VMID" "$TMPQCOW2" "$STORAGE" || _die "Disk import failed."
     _log PASS "Disk imported."
@@ -309,7 +347,7 @@ step_import_disk() {
 
 step_attach_disk() {
     _section "Step 8: Attach Disk & Set Boot Order"
-    _confirm "Attach imported disk and set boot order?"
+    _confirm_yes "Attach imported disk and set boot order?"
 
     # Try disk-1 first (slot 0 is the EFI disk), fall back to disk-0
     local attached=0
@@ -332,36 +370,50 @@ step_attach_disk() {
 
 step_cleanup() {
     _section "Step 9: Cleanup"
-    _confirm "Remove temporary file ${TMPQCOW2}?"
+    _confirm_yes "Remove temporary file ${TMPQCOW2}?"
     rm -f "$TMPQCOW2"
     _log PASS "Temp file removed."
 }
 
 step_start_vm() {
     _section "Step 10: Start VM"
-    _confirm "Start VM ${VMID} now?"
-    qm start "$VMID" || _die "Failed to start VM. Check the Proxmox UI for details."
-    _log PASS "VM ${VMID} is starting!"
+    if _confirm_no "Start VM ${VMID} now?"; then
+        qm start "$VMID" || _die "Failed to start VM. Check the Proxmox UI for details."
+        VM_STARTED=1
+        _log PASS "VM ${VMID} is starting!"
+    else
+        VM_STARTED=0
+        _log INFO "VM ${VMID} was created but not started."
+    fi
 }
 
 step_done() {
-    printf "\n%s%s" "${grn}" "${bld}"
-    printf "╔══════════════════════════════════════════════════════╗\n"
-    printf "║           Installation Complete!                     ║\n"
-    printf "╚══════════════════════════════════════════════════════╝\n"
-    printf "%s\n" "${rst}"
-    printf "  HAOS is booting. First boot may take %s3–5 minutes%s.\n" "${bld}" "${rst}"
-    printf "  Open your browser and navigate to:\n"
-    printf "  %s%s  http://%s:8123%s\n\n" "${cyn}" "${bld}" "${HAOS_IP}" "${rst}"
-    printf "  Monitor boot progress: Proxmox UI → VM %s → Console\n\n" "${VMID}"
-    printf "  %sNote:%s If the disk was not attached automatically,\n" "${ylw}" "${rst}"
-    printf "  go to VM %s → Hardware → double-click 'Unused Disk' → Add.\n" "${VMID}"
-    printf "  Then: VM Options → Boot Order → enable scsi0 first.\n\n"
+    printf "%s%s" "${grn}" "${bld}"
+    printf "╔══════════════════════════════════════════════════════╗"
+    printf "║           Installation Complete!                     ║"
+    printf "╚══════════════════════════════════════════════════════╝"
+    printf "%s" "${rst}"
+    if [[ "${VM_STARTED:-0}" == "1" ]]; then
+        printf "  HAOS is booting. First boot may take %s3–5 minutes%s." "${bld}" "${rst}"
+        printf "  Open your browser and navigate to:"
+        printf "  %s%s  http://%s:8123%s" "${cyn}" "${bld}" "${HAOS_IP}" "${rst}"
+    else
+        printf "  HAOS is not started yet. Start the VM when you are ready."
+        printf "  When it is running, browse to:"
+        printf "  %s%s  http://%s:8123%s" "${cyn}" "${bld}" "${HAOS_IP}" "${rst}"
+    fi
+    printf "  Monitor boot progress: Proxmox UI → VM %s → Console" "${VMID}"
+    printf "  VM NIC MAC address: %s" "${ACTUAL_MAC:-unknown}"
+    printf "  Use that MAC for a DHCP reservation if you want %s on your router." "${HAOS_IP}"
+    if [[ "${VM_STARTED:-0}" == "1" ]]; then
+        printf "  VM state: started"
+    else
+        printf "  VM state: not started yet — start it from Proxmox when ready."
+    fi
+    printf "  %sNote:%s If the disk was not attached automatically," "${ylw}" "${rst}"
+    printf "  go to VM %s → Hardware → double-click 'Unused Disk' → Add." "${VMID}"
+    printf "  Then: VM Options → Boot Order → enable scsi0 first."
 }
-
-# =============================================================================
-# MAIN
-# =============================================================================
 
 main() {
     _color_setup
@@ -371,7 +423,7 @@ main() {
     readonly TMPQCOW2="/tmp/HAOS.qcow2"
 
     # Declare config vars (populated by step_collect_input)
-    VMID="" VMNAME="" STORAGE="" RAM="" CORES="" BRIDGE="" VLAN_TAG="" HAOS_IP=""
+    VMID="" VMNAME="" STORAGE="" RAM="" CORES="" MACADDR="" ACTUAL_MAC="" BRIDGE="" VLAN_TAG="" HAOS_IP="" VM_STARTED=0
     DOWNLOAD_URL="" HAOS_VERSION=""
 
     _banner
