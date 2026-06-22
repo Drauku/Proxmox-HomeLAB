@@ -84,7 +84,6 @@ _confirm_no() {
 }
 
 _prompt() {
-    # Usage: _prompt VARNAME "Prompt text" "default_value_or_empty"
     local varname="$1"
     local prompt="$2"
     local default="${3:-}"
@@ -112,7 +111,6 @@ _banner() {
 }
 
 _ensure_cmd() {
-    # Usage: _ensure_cmd cmd [apt-package]
     local cmd="$1" pkg="${2:-$1}"
     _check_cmd "$cmd" && return 0
     _log WARN "${cmd} not found — installing ${pkg}..."
@@ -170,7 +168,7 @@ step_collect_input() {
         # Check free space — pvesm avail column is in bytes; require >= 12 GB
         local avail_kib min_kib avail_gib
         avail_kib=$(pvesm status | awk -v s="$STORAGE" '$1==s {print $5}')
-        min_kib=$(( 12 * 1024 * 1024 ))   # 12 GiB in KiB
+        min_kib=$(( 12 * 1024 * 1024 ))
         if [[ -n "$avail_kib" && "$avail_kib" =~ ^[0-9]+$ && "$avail_kib" -lt "$min_kib" ]]; then
             avail_gib=$(( avail_kib / 1024 / 1024 ))
             _log WARN "Storage '${STORAGE}' only has ~${avail_gib} GiB free (12 GiB recommended)."
@@ -228,11 +226,14 @@ step_collect_input() {
     _log INFO "Available network bridges from Proxmox config:"
     local available_bridges
     available_bridges=$(
-        { [[ -f /etc/network/interfaces ]] && awk '$1 == "iface" && $NF == "bridge" { print $2 }' /etc/network/interfaces
-        if compgen -G '/etc/network/interfaces.d/*' >/dev/null; then
-        awk '$1 == "iface" && $NF == "bridge" { print $2 }' /etc/network/interfaces.d/*
-        fi; } 2>/dev/null | sort -u; )
-    [[ -n "$available_bridges" ]] || _die "No Linux bridges were found in Proxmox network config."
+        awk '/^auto[[:space:]]+vmbr[[:alnum:]:._-]*/ {
+            for (i = 2; i <= NF; i++) print $i
+        }
+        /^iface[[:space:]]+vmbr[[:alnum:]:._-]+[[:space:]]+inet/ {
+            print $2
+        }' /etc/network/interfaces 2>/dev/null | sort -u
+    )
+    [[ -n "$available_bridges" ]] || _die "No Linux bridges were found in /etc/network/interfaces."
     printf '%s\n' "$available_bridges" | awk '{print "       ", $1}' >&2
     while true; do
         _prompt BRIDGE "Network bridge" "vmbr0"
@@ -275,13 +276,12 @@ step_summary() {
     printf "   %-12s %s\n" "VLAN:"     "$vlan_display"
     printf "   %-12s %s\n" "HAOS IP:"  "$HAOS_IP"
     printf "\n"
-    _confirm_yes "Proceed with the above settings?"
+    _confirm_yes "Proceed with the above settings?" || { _log WARN "Aborted by user."; exit 0; }
 }
 
 step_download() {
     _section "Step 4: Download Latest HAOS Image"
     _log INFO "Querying GitHub API for the latest HAOS release..."
-
     local release_json
     release_json=$(curl -sf https://api.github.com/repos/home-assistant/operating-system/releases/latest) \
         || _die "Failed to reach GitHub API. Check your network connection."
@@ -294,8 +294,7 @@ step_download() {
     HAOS_VERSION=$(printf '%s' "$release_json" | grep -oP '"tag_name":\s*"\K[^"]+' | head -1)
     _log INFO "Latest HAOS version : ${HAOS_VERSION}"
     _log INFO "Download URL        : ${DOWNLOAD_URL}"
-
-    _confirm_yes "Download HAOS ${HAOS_VERSION}?"
+    _confirm_yes "Download HAOS ${HAOS_VERSION}?" || { _log WARN "Aborted by user."; exit 0; }
     _log INFO "Downloading to ${TMPXZ}..."
     wget --progress=bar:force -O "$TMPXZ" "$DOWNLOAD_URL" 2>&1 || _die "Download failed."
     _log PASS "Download complete."
@@ -303,7 +302,7 @@ step_download() {
 
 step_extract() {
     _section "Step 5: Extract Image"
-    _confirm_yes "Extract ${TMPXZ}?"
+    _confirm_yes "Extract ${TMPXZ}?" || { _log WARN "Aborted by user."; exit 0; }
     _log INFO "Extracting image..."
     unxz -v "$TMPXZ" || _die "Extraction failed."
     [[ -f "$TMPQCOW2" ]] || _die "Expected ${TMPQCOW2} after extraction but file not found."
@@ -312,9 +311,8 @@ step_extract() {
 
 step_create_vm() {
     _section "Step 6: Create VM"
-    _confirm_yes "Create VM ${VMID} (${VMNAME})?"
+    _confirm_yes "Create VM ${VMID} (${VMNAME})?" || { _log WARN "Aborted by user."; exit 0; }
 
-    # Build net0 string — include MAC only if explicitly provided
     local net0="virtio,bridge=${BRIDGE}"
     [[ -n "${MACADDR:-}" ]] && net0="virtio=${MACADDR},bridge=${BRIDGE}"
     [[ -n "${VLAN_TAG:-}" ]] && net0="${net0},tag=${VLAN_TAG}"
@@ -341,7 +339,7 @@ step_create_vm() {
 
 step_import_disk() {
     _section "Step 7: Import Disk"
-    _confirm_yes "Import HAOS disk into storage '${STORAGE}'?"
+    _confirm_yes "Import HAOS disk into storage '${STORAGE}'?" || { _log WARN "Aborted by user."; exit 0; }
     _log INFO "Importing disk (this may take a moment)..."
     qm importdisk "$VMID" "$TMPQCOW2" "$STORAGE" || _die "Disk import failed."
     _log PASS "Disk imported."
@@ -349,9 +347,8 @@ step_import_disk() {
 
 step_attach_disk() {
     _section "Step 8: Attach Disk & Set Boot Order"
-    _confirm_yes "Attach imported disk and set boot order?"
+    _confirm_yes "Attach imported disk and set boot order?" || { _log WARN "Aborted by user."; exit 0; }
 
-    # Try disk-1 first (slot 0 is the EFI disk), fall back to disk-0
     local attached=0
     for slot in 1 0; do
         local disk_id="${STORAGE}:vm-${VMID}-disk-${slot}"
@@ -372,7 +369,7 @@ step_attach_disk() {
 
 step_cleanup() {
     _section "Step 9: Cleanup"
-    _confirm_yes "Remove temporary file ${TMPQCOW2}?"
+    _confirm_yes "Remove temporary file ${TMPQCOW2}?" || { _log WARN "Aborted by user."; exit 0; }
     rm -f "$TMPQCOW2"
     _log PASS "Temp file removed."
 }
@@ -420,13 +417,12 @@ step_done() {
 main() {
     _color_setup
 
-    # Shared temp file paths (set once, used across steps)
     readonly TMPXZ="/tmp/HAOS.qcow2.xz"
     readonly TMPQCOW2="/tmp/HAOS.qcow2"
 
-    # Declare config vars (populated by step_collect_input)
-    VMID="" VMNAME="" STORAGE="" RAM="" CORES="" MACADDR="" ACTUAL_MAC="" BRIDGE="" VLAN_TAG="" HAOS_IP="" VM_STARTED=0
-    DOWNLOAD_URL="" HAOS_VERSION=""
+    VMID="" VMNAME="" STORAGE="" RAM="" CORES=""
+    MACADDR="" ACTUAL_MAC="" BRIDGE="" VLAN_TAG="" HAOS_IP=""
+    VM_STARTED=0 DOWNLOAD_URL="" HAOS_VERSION=""
 
     _banner
     step_preflight
