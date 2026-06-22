@@ -159,12 +159,22 @@ step_collect_input() {
     # Storage — list available pools, validate name, then check free space
     _log INFO "Available storage pools:"
     pvesm status | awk 'NR>1 {printf "        %-20s type=%-10s avail=%s\n", $1, $2, $5}' >&2
+
+    local DEFAULT_STORAGE=""
+    if pvesm status | awk 'NR>1 {print $1}' | grep -qx "local-lvm"; then
+        DEFAULT_STORAGE="local-lvm"
+    elif pvesm status | awk 'NR>1 {print $1}' | grep -qx "local-zfs"; then
+        DEFAULT_STORAGE="local-zfs"
+    fi
+
     while true; do
-        _prompt STORAGE "Storage name (e.g. local-lvm, local-zfs)" ""
+        _prompt STORAGE "Storage name (enter = $DEFAULT_STORAGE)" "$DEFAULT_STORAGE"
         if ! pvesm status | awk 'NR>1 {print $1}' | grep -qx "$STORAGE"; then
             _log WARN "Storage '${STORAGE}' not found. Check the list above."
             continue
         fi
+        break
+    done
         # Check free space — pvesm avail column is in bytes; require >= 12 GB
         local avail_kib min_kib avail_gib
         avail_kib=$(pvesm status | awk -v s="$STORAGE" '$1==s {print $5}')
