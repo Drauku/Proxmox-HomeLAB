@@ -122,15 +122,19 @@ step_collect_input() {
     # VM ID — must be a positive integer and not already in use
     while true; do
         _prompt VMID "VM ID for the HAOS VM (e.g. 100)" ""
-        [[ "$VMID" =~ ^[0-9]+$ ]] || { _log WARN "VM ID must be a positive integer."; continue; }
+        if ! [[ "$VMID" =~ ^[0-9]+$ ]]; then
+            _log WARN "VM ID must be a positive integer."
+            continue
+        fi
         if qm status "$VMID" &>/dev/null 2>&1; then
-            { _log WARN "VM ID ${VMID} already exists. Choose another."; continue; }
+            _log WARN "VM ID ${VMID} already exists. Choose another."
+            continue
         fi
         break
     done
     _log PASS "VM ID: ${VMID}"
 
-    _prompt VMNAME  "VM name"               "HomeAssistant"
+    _prompt VMNAME "VM name" "HomeAssistant"
     _log PASS "VM name: ${VMNAME}"
 
     # Storage — list available pools, validate name, then check free space
@@ -150,20 +154,43 @@ step_collect_input() {
             avail_gb=$(( avail_bytes / 1024 / 1024 / 1024 ))
             _log WARN "Storage '${STORAGE}' only has ~${avail_gb} GB free (12 GB recommended)."
             local _low_ans; read -rp "   Continue anyway? [y/N]: " _low_ans
-            [[ "${_low_ans,,}" == "y" ]] || continue
+            if [[ "${_low_ans,,}" != "y" ]]; then
+                continue
+            fi
         fi
         break
     done
     _log PASS "Storage: ${STORAGE}"
 
-    _prompt RAM     "RAM in MB"             "4096"
-    [[ "$RAM" -ge 2048 ]] || _log WARN "Less than 2048 MB RAM may cause instability."
+    # RAM — must be an integer, warn if under 2048
+    while true; do
+        _prompt RAM "RAM in MB" "4096"
+        if ! [[ "$RAM" =~ ^[0-9]+$ ]]; then
+            _log WARN "RAM must be a positive integer."
+            continue
+        fi
+        if [[ "$RAM" -lt 2048 ]]; then
+            _log WARN "Less than 2048 MB RAM may cause instability."
+            local _ram_ans; read -rp "   Continue anyway? [y/N]: " _ram_ans
+            if [[ "${_ram_ans,,}" != "y" ]]; then
+                continue
+            fi
+        fi
+        break
+    done
     _log PASS "RAM: ${RAM} MB"
 
-    _prompt CORES   "CPU cores"             "2"
+    # CPU cores — must be a positive integer
+    while true; do
+        _prompt CORES "CPU cores" "2"
+        if [[ "$CORES" =~ ^[0-9]+$ && "$CORES" -ge 1 ]]; then
+            break
+        fi
+        _log WARN "Cores must be a positive integer."
+    done
     _log PASS "Cores: ${CORES}"
 
-    # Network bridge + optional VLAN
+    # Network bridge — must exist on this host
     _log INFO "Available network bridges:"
     local available_bridges
     available_bridges=$(ip link show | awk '/^[0-9]+: vmbr/{gsub(":",""); print $2}')
@@ -173,19 +200,23 @@ step_collect_input() {
         if printf '%s\n' "$available_bridges" | grep -qx "$BRIDGE"; then
             break
         fi
-        _log WARN "Bridge '${BRIDGE}' not found on this host. Available: $(printf '%s ' $available_bridges)"
-        _log WARN "Check the list above or verify with: ip link show"
+        _log WARN "Bridge '${BRIDGE}' not found. Available: $(printf '%s ' $available_bridges)"
     done
     _log PASS "Bridge: ${BRIDGE}"
 
-    _prompt VLAN_TAG "VLAN tag (leave blank for none / untagged)" ""
-    if [[ -n "$VLAN_TAG" ]]; then
-        [[ "$VLAN_TAG" =~ ^[0-9]+$ && "$VLAN_TAG" -ge 1 && "$VLAN_TAG" -le 4094 ]] \
-            || _die "VLAN tag must be an integer between 1 and 4094."
-        _log PASS "VLAN tag: ${VLAN_TAG}"
-    else
-        _log INFO "No VLAN tag — adapter will be untagged."
-    fi
+    # VLAN tag — optional, must be 1–4094 if provided
+    while true; do
+        _prompt VLAN_TAG "VLAN tag (leave blank for none / untagged)" ""
+        if [[ -z "$VLAN_TAG" ]]; then
+            _log INFO "No VLAN tag — adapter will be untagged."
+            break
+        fi
+        if [[ "$VLAN_TAG" =~ ^[0-9]+$ && "$VLAN_TAG" -ge 1 && "$VLAN_TAG" -le 4094 ]]; then
+            _log PASS "VLAN tag: ${VLAN_TAG}"
+            break
+        fi
+        _log WARN "VLAN tag must be an integer between 1 and 4094."
+    done
 
     _prompt HAOS_IP "IP address HAOS will use (for the final URL only)" "192.168.1.X"
     _log PASS "HAOS IP noted: ${HAOS_IP}"
