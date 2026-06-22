@@ -168,7 +168,7 @@ step_collect_input() {
     fi
 
     while true; do
-        _prompt STORAGE "Storage name (enter = $DEFAULT_STORAGE)" "$DEFAULT_STORAGE"
+        _prompt STORAGE "Storage name" "$DEFAULT_STORAGE"
         if ! pvesm status | awk 'NR>1 {print $1}' | grep -qx "$STORAGE"; then
             _log WARN "Storage '${STORAGE}' not found. Check the list above."
             continue
@@ -219,7 +219,7 @@ step_collect_input() {
     while true; do
         _prompt MACADDR "MAC address for the VM NIC (blank = auto-generate)" ""
         if [[ -z "$MACADDR" ]]; then
-            _log INFO "No MAC provided — Proxmox will auto-generate one."
+            _log PASS "No MAC provided — Proxmox will auto-generate one."
             break
         fi
         if _valid_mac "$MACADDR"; then
@@ -266,23 +266,23 @@ step_collect_input() {
         _log WARN "VLAN tag must be an integer between 1 and 4094."
     done
 
-    _prompt HAOS_IP "Desired HAOS IP / DHCP reservation target (informational only)" "192.168.1.X"
-    _log PASS "HAOS IP noted: ${HAOS_IP}"
+    # _prompt HAOS_IP "Desired ${VMNAME} IP / DHCP reservation target (informational only)" "192.168.1.X"
+    # _log PASS "HAOS IP noted: ${HAOS_IP}"
 }
 
 step_summary() {
     _section "Step 3: Summary"
     local vlan_display="${VLAN_TAG:-none (untagged)}"
     printf "\n"
-    printf "   %-12s %s\n" "VM ID:"    "$VMID"
-    printf "   %-12s %s\n" "VM Name:"  "$VMNAME"
-    printf "   %-12s %s\n" "Storage:"  "$STORAGE"
+    printf "   %-12s %s\n" "VM ID:"    "${VMID}"
+    printf "   %-12s %s\n" "VM Name:"  "${VMNAME}"
+    printf "   %-12s %s\n" "Storage:"  "${STORAGE}"
     printf "   %-12s %s\n" "RAM:"      "${RAM} MB"
-    printf "   %-12s %s\n" "Cores:"    "$CORES"
+    printf "   %-12s %s\n" "Cores:"    "${CORES}"
     printf "   %-12s %s\n" "MAC:"      "${MACADDR:-auto}"
-    printf "   %-12s %s\n" "Bridge:"   "$BRIDGE"
-    printf "   %-12s %s\n" "VLAN:"     "$vlan_display"
-    printf "   %-12s %s\n" "HAOS IP:"  "$HAOS_IP"
+    printf "   %-12s %s\n" "Bridge:"   "${BRIDGE}"
+    printf "   %-12s %s\n" "VLAN:"     "${vlan_display}"
+    printf "   %-12s %s\n" "HAOS IP:"  "${HAOS_IP}"
     printf "\n"
     _confirm_yes "Proceed with the above settings?" || { _log WARN "Aborted by user."; exit 0; }
 }
@@ -395,31 +395,31 @@ step_start_vm() {
 }
 
 step_done() {
-    printf "%s%s" "${grn}" "${bld}"
-    printf "╔══════════════════════════════════════════════════════╗"
-    printf "║           Installation Complete!                     ║"
-    printf "╚══════════════════════════════════════════════════════╝"
-    printf "%s" "${rst}"
+    printf "\n%s%s" "${grn}" "${bld}"
+    printf "╔══════════════════════════════════════════════════════╗\n"
+    printf "║           Installation Complete!                     ║\n"
+    printf "╚══════════════════════════════════════════════════════╝\n"
+    printf "%s\n" "${rst}"
     if [[ "${VM_STARTED:-0}" == "1" ]]; then
-        printf "  HAOS is booting. First boot may take %s3–5 minutes%s." "${bld}" "${rst}"
-        printf "  Open your browser and navigate to:"
-        printf "  %s%s  http://%s:8123%s" "${cyn}" "${bld}" "${HAOS_IP}" "${rst}"
+        printf "  HAOS is booting. First boot may take %s3–5 minutes%s.\n" "${bld}" "${rst}"
+        printf "  Open your browser and navigate to:\n"
+        printf "  %s%s  http://%s:8123%s\n\n" "${cyn}" "${bld}" "${HAOS_IP}" "${rst}"
     else
-        printf "  HAOS is not started yet. Start the VM when you are ready."
-        printf "  When it is running, browse to:"
-        printf "  %s%s  http://%s:8123%s" "${cyn}" "${bld}" "${HAOS_IP}" "${rst}"
+        printf "  HAOS is not started yet. Start the VM when you are ready.\n"
+        printf "  When it is running, browse to:\n"
+        printf "  %s%s  http://%s:8123%s\n\n" "${cyn}" "${bld}" "${HAOS_IP}" "${rst}"
     fi
-    printf "  Monitor boot progress: Proxmox UI → VM %s → Console" "${VMID}"
-    printf "  VM NIC MAC address: %s" "${ACTUAL_MAC:-unknown}"
-    printf "  Use that MAC for a DHCP reservation if you want %s on your router." "${HAOS_IP}"
+    printf "  Monitor boot progress: Proxmox UI → VM %s → Console\n" "${VMID}"
+    printf "  VM NIC MAC address: %s\n" "${ACTUAL_MAC:-unknown}"
+    printf "  Use that MAC for a DHCP reservation if you want %s on your router.\n" "${HAOS_IP}"
     if [[ "${VM_STARTED:-0}" == "1" ]]; then
-        printf "  VM state: started"
+        printf "  VM state: started\n\n"
     else
-        printf "  VM state: not started yet — start it from Proxmox when ready."
+        printf "  VM state: not started yet — start it from Proxmox when ready.\n\n"
     fi
-    printf "  %sNote:%s If the disk was not attached automatically," "${ylw}" "${rst}"
-    printf "  go to VM %s → Hardware → double-click 'Unused Disk' → Add." "${VMID}"
-    printf "  Then: VM Options → Boot Order → enable scsi0 first."
+    printf "  %sNote:%s If the disk was not attached automatically,\n" "${ylw}" "${rst}"
+    printf "  go to VM %s → Hardware → double-click 'Unused Disk' → Add.\n" "${VMID}"
+    printf "  Then: VM Options → Boot Order → enable scsi0 first.\n\n"
 }
 
 main() {
