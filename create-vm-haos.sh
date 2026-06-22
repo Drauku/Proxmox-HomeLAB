@@ -122,8 +122,10 @@ step_collect_input() {
     # VM ID — must be a positive integer and not already in use
     while true; do
         _prompt VMID "VM ID for the HAOS VM (e.g. 100)" ""
-        [[ "$VMID" =~ ^[0-9]+$ ]]        || { _log WARN "VM ID must be a positive integer."; continue; }
-        ! qm status "$VMID" &>/dev/null   || { _log WARN "VM ID ${VMID} already exists. Choose another."; continue; }
+        [[ "$VMID" =~ ^[0-9]+$ ]] || { _log WARN "VM ID must be a positive integer."; continue; }
+        if qm status "$VMID" &>/dev/null 2>&1; then
+            { _log WARN "VM ID ${VMID} already exists. Choose another."; continue; }
+        fi
         break
     done
     _log PASS "VM ID: ${VMID}"
