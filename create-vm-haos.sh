@@ -129,8 +129,9 @@ step_collect_input() {
         if qm status "$VMID" &>/dev/null 2>&1; then
             _log WARN "VM ID ${VMID} already exists. Choose another."
             continue
+        else
+            break
         fi
-        break
     done
     _log PASS "VM ID: ${VMID}"
 
@@ -157,8 +158,9 @@ step_collect_input() {
             if [[ "${_low_ans,,}" != "y" ]]; then
                 continue
             fi
+        else
+            break
         fi
-        break
     done
     _log PASS "Storage: ${STORAGE}"
 
@@ -175,8 +177,9 @@ step_collect_input() {
             if [[ "${_ram_ans,,}" != "y" ]]; then
                 continue
             fi
+        else
+            break
         fi
-        break
     done
     _log PASS "RAM: ${RAM} MB"
 
