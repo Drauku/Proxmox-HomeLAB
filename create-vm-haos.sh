@@ -173,8 +173,6 @@ step_collect_input() {
             _log WARN "Storage '${STORAGE}' not found. Check the list above."
             continue
         fi
-        break
-    done
         # Check free space — pvesm avail column is in bytes; require >= 12 GB
         local avail_kib min_kib avail_gib
         avail_kib=$(pvesm status | awk -v s="$STORAGE" '$1==s {print $5}')
