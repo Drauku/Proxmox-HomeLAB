@@ -151,12 +151,12 @@ step_collect_input() {
             continue
         fi
         # Check free space — pvesm avail column is in bytes; require >= 12 GB
-        local avail_bytes min_bytes avail_gb
-        avail_bytes=$(pvesm status | awk -v s="$STORAGE" '$1==s {print $5}')
-        min_bytes=$(( 12 * 1024 * 1024 * 1024 ))
-        if [[ -n "$avail_bytes" && "$avail_bytes" =~ ^[0-9]+$ && "$avail_bytes" -lt "$min_bytes" ]]; then
-            avail_gb=$(( avail_bytes / 1024 / 1024 / 1024 ))
-            _log WARN "Storage '${STORAGE}' only has ~${avail_gb} GB free (12 GB recommended)."
+        local avail_kib min_kib avail_gib
+        avail_kib=$(pvesm status | awk -v s="$STORAGE" '$1==s {print $5}')
+        min_kib=$(( 12 * 1024 * 1024 ))   # 12 GiB in KiB
+        if [[ -n "$avail_kib" && "$avail_kib" =~ ^[0-9]+$ && "$avail_kib" -lt "$min_kib" ]]; then
+            avail_gib=$(( avail_kib / 1024 / 1024 ))
+            _log WARN "Storage '${STORAGE}' only has ~${avail_gib} GiB free (12 GiB recommended)."
             local _low_ans; read -rp "   Continue anyway? [y/N]: " _low_ans
             if [[ "${_low_ans,,}" != "y" ]]; then
                 continue
