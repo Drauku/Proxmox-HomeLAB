@@ -227,9 +227,11 @@ step_collect_input() {
     # Network bridge — read from Proxmox network config, not raw ip link output
     _log INFO "Available network bridges from Proxmox config:"
     local available_bridges
-    available_bridges=$(awk '
-        $1 == "iface" && $NF == "bridge" { print $2 }
-    ' /etc/network/interfaces /etc/network/interfaces.d/* 2>/dev/null | sort -u)
+    available_bridges=$(
+        { [[ -f /etc/network/interfaces ]] && awk '$1 == "iface" && $NF == "bridge" { print $2 }' /etc/network/interfaces
+        if compgen -G '/etc/network/interfaces.d/*' >/dev/null; then
+        awk '$1 == "iface" && $NF == "bridge" { print $2 }' /etc/network/interfaces.d/*
+        fi; } 2>/dev/null | sort -u; )
     [[ -n "$available_bridges" ]] || _die "No Linux bridges were found in Proxmox network config."
     printf '%s\n' "$available_bridges" | awk '{print "       ", $1}' >&2
     while true; do
