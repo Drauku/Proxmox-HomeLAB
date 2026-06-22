@@ -6,250 +6,327 @@
 
 set -euo pipefail
 
-# --- Colors & Formatting ---
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
+# =============================================================================
+# LOGGING & COLOR UTILITIES
+# =============================================================================
 
-info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
-success() { echo -e "${GREEN}[OK]${RESET}    $*"; }
-warn()    { echo -e "${YELLOW}[WARN]${RESET}  $*"; }
-error()   { echo -e "${RED}[ERROR]${RESET} $*"; exit 1; }
-ask()     { echo -e "${BOLD}$*${RESET}"; }
-
-confirm() {
-    local prompt="${1:-Continue?}"
-    read -rp "$(echo -e "${YELLOW}${prompt} [y/N]: ${RESET}")" ans
-    [[ "${ans,,}" == "y" ]] || { echo "Aborted."; exit 0; }
+_check_cmd() {
+    command -v "$1" >/dev/null 2>&1
 }
 
-# --- Banner ---
-echo -e "${BOLD}${CYAN}"
-echo "╔══════════════════════════════════════════════════════╗"
-echo "║     Home Assistant OS - Proxmox Installer            ║"
-echo "║     Installs HAOS via qcow2 image into a new VM      ║"
-echo "╚══════════════════════════════════════════════════════╝"
-echo -e "${RESET}"
+_tput_safe() { _check_cmd tput && tput "$@" 2>/dev/null || true; }
 
-# --- Root check ---
-[[ $EUID -ne 0 ]] && error "This script must be run as root on the Proxmox host."
-
-# --- Dependency check ---
-info "Checking dependencies (wget, xz-utils, qm, pvesh)..."
-for cmd in wget qm pvesh curl; do
-    command -v "$cmd" &>/dev/null || { warn "$cmd not found. Installing..."; apt-get install -y "${cmd}" &>/dev/null; }
-done
-dpkg -l xz-utils &>/dev/null || { warn "xz-utils not found. Installing..."; apt-get update -qq && apt-get install -y xz-utils &>/dev/null; }
-success "All dependencies satisfied."
-echo
-
-# =============================================================================
-# STEP 1: Collect User Input
-# =============================================================================
-echo -e "${BOLD}─── Step 1: Configuration ────────────────────────────────${RESET}"
-echo
-
-# VM ID
-while true; do
-    ask "Enter the VM ID for the HAOS VM (e.g. 100, 200):"
-    read -rp "> " VMID
-    if ! [[ "$VMID" =~ ^[0-9]+$ ]]; then
-        warn "VM ID must be a positive integer. Try again."
-        continue
+_color_setup() {
+    if [[ -n ${CSM_NO_COLOR:-} || ! -t 1 ]]; then
+        red="" grn="" ylw="" blu="" mgn="" cyn=""
+        wht="" blk="" bld="" uln="" rst=""
+    else
+        red=$(_tput_safe setaf 1)
+        grn=$(_tput_safe setaf 2)
+        ylw=$(_tput_safe setaf 3)
+        blu=$(_tput_safe setaf 4)
+        mgn=$(_tput_safe setaf 5)
+        cyn=$(_tput_safe setaf 6)
+        wht=$(_tput_safe setaf 7)
+        blk=$(_tput_safe setaf 0)
+        bld=$(_tput_safe bold)
+        uln=$(_tput_safe smul)
+        rst=$(_tput_safe sgr0)
     fi
-    if qm status "$VMID" &>/dev/null 2>&1; then
-        warn "VM ID ${VMID} already exists. Please choose a different ID."
-        continue
+}
+
+_log() {
+    local level="${1:-INFO}" message="${2:-}"
+    local color
+    local prefix=""
+
+    if [[ "${dry_run:-0}" == "1" ]]; then prefix="[DRY-RUN] "; fi
+
+    case "$level" in
+        EXIT|FAIL)  color="${red}" ;;
+        INFO)       color="${cyn}" ;;
+        PASS)       color="${grn}" ;;
+        STEP)       color="${mgn}"; if [[ "${csm_debug:-0}" == "0" ]]; then return 0; fi ;;
+        WARN)       color="${ylw}" ;;
+        *)          color="${ylw}"; level="WARN"
+                    message="[Unknown log type: '${level}'] $message"
+                    ;;
+    esac
+    printf " %s%s%-4s >> %s%s%s %s%s<<%s\n" \
+        "${color}" "${bld}" "${level}" "${prefix}" "${rst}" "${message}" "${color}" "${bld}" "${rst}" >&2
+    if [[ "$level" == "EXIT" ]]; then exit 1; fi
+}
+
+_die() { _log FAIL "$1"; exit 1; }
+
+# =============================================================================
+# HELPERS
+# =============================================================================
+
+_confirm() {
+    local prompt="${1:-Continue?}"
+    local ans
+    read -rp "$(printf " %s%s?%s    >> %s [y/N]: " "${ylw}" "${bld}" "${rst}" "${prompt}")" ans
+    [[ "${ans,,}" == "y" ]] || { _log WARN "Aborted by user."; exit 0; }
+}
+
+_prompt() {
+    # Usage: _prompt VARNAME "Prompt text" "default_value_or_empty"
+    local -n _ref="$1"
+    local prompt="$2"
+    local default="${3:-}"
+    local display_default=""
+    [[ -n "$default" ]] && display_default=" (default: ${default})"
+    read -rp "$(printf " %s%s?%s    >> %s%s: " "${cyn}" "${bld}" "${rst}" "${prompt}" "${display_default}")" _ref
+    [[ -z "$_ref" && -n "$default" ]] && _ref="$default"
+}
+
+_section() {
+    printf "\n%s%s─── %s %s%s\n" "${mgn}" "${bld}" "$1" "$(printf '─%.0s' {1..40})" "${rst}"
+}
+
+_banner() {
+    printf "\n%s%s" "${cyn}" "${bld}"
+    printf "╔══════════════════════════════════════════════════════╗\n"
+    printf "║     Home Assistant OS - Proxmox Installer            ║\n"
+    printf "║     Installs HAOS via qcow2 image into a new VM      ║\n"
+    printf "╚══════════════════════════════════════════════════════╝\n"
+    printf "%s\n" "${rst}"
+}
+
+_ensure_cmd() {
+    # Usage: _ensure_cmd cmd [apt-package]
+    local cmd="$1" pkg="${2:-$1}"
+    _check_cmd "$cmd" && return 0
+    _log WARN "${cmd} not found — installing ${pkg}..."
+    apt-get install -y "$pkg" -qq || _die "Failed to install ${pkg}."
+}
+
+# =============================================================================
+# STEPS
+# =============================================================================
+
+step_preflight() {
+    _section "Step 1: Preflight Checks"
+    [[ $EUID -ne 0 ]] && _die "This script must be run as root on the Proxmox host."
+    for cmd_pkg in "wget wget" "curl curl" "qm pve-manager" "pvesh pve-manager"; do
+        _ensure_cmd $cmd_pkg
+    done
+    _check_cmd xz || { _log WARN "xz-utils not found — installing..."; apt-get update -qq && apt-get install -y xz-utils -qq; }
+    _log PASS "All dependencies satisfied."
+}
+
+step_collect_input() {
+    _section "Step 2: Configuration"
+
+    # VM ID — must be a positive integer and not already in use
+    while true; do
+        _prompt VMID "VM ID for the HAOS VM (e.g. 100)" ""
+        [[ "$VMID" =~ ^[0-9]+$ ]]        || { _log WARN "VM ID must be a positive integer."; continue; }
+        ! qm status "$VMID" &>/dev/null   || { _log WARN "VM ID ${VMID} already exists. Choose another."; continue; }
+        break
+    done
+    _log PASS "VM ID: ${VMID}"
+
+    _prompt VMNAME  "VM name"               "HomeAssistant"
+    _log PASS "VM name: ${VMNAME}"
+
+    # Storage — list available pools then validate
+    _log INFO "Available storage pools:"
+    pvesm status | awk 'NR>1 {printf "        %-20s type=%-10s avail=%s\n", $1, $2, $5}' >&2
+    while true; do
+        _prompt STORAGE "Storage name (e.g. local-lvm, local-zfs)" ""
+        pvesm status | awk 'NR>1 {print $1}' | grep -qx "$STORAGE" && break
+        _log WARN "Storage '${STORAGE}' not found. Check the list above."
+    done
+    _log PASS "Storage: ${STORAGE}"
+
+    _prompt RAM     "RAM in MB"             "4096"
+    [[ "$RAM" -ge 2048 ]] || _log WARN "Less than 2048 MB RAM may cause instability."
+    _log PASS "RAM: ${RAM} MB"
+
+    _prompt CORES   "CPU cores"             "2"
+    _log PASS "Cores: ${CORES}"
+
+    # Network bridge + optional VLAN
+    _log INFO "Available network bridges:"
+    ip link show | awk '/^[0-9]+: vmbr/{gsub(":",""); print "       ", $2}' >&2
+    _prompt BRIDGE  "Network bridge"        "vmbr0"
+    _log PASS "Bridge: ${BRIDGE}"
+
+    _prompt VLAN_TAG "VLAN tag (leave blank for none / untagged)" ""
+    if [[ -n "$VLAN_TAG" ]]; then
+        [[ "$VLAN_TAG" =~ ^[0-9]+$ && "$VLAN_TAG" -ge 1 && "$VLAN_TAG" -le 4094 ]] \
+            || _die "VLAN tag must be an integer between 1 and 4094."
+        _log PASS "VLAN tag: ${VLAN_TAG}"
+    else
+        _log INFO "No VLAN tag — adapter will be untagged."
     fi
-    break
-done
-success "VM ID set to: ${VMID}"
-echo
 
-# VM Name
-ask "Enter a name for the VM (default: HomeAssistant):"
-read -rp "> " VMNAME
-VMNAME="${VMNAME:-HomeAssistant}"
-success "VM name set to: ${VMNAME}"
-echo
+    _prompt HAOS_IP "IP address HAOS will use (for the final URL only)" "192.168.1.X"
+    _log PASS "HAOS IP noted: ${HAOS_IP}"
+}
 
-# Storage
-info "Available storage pools:"
-pvesm status | awk 'NR>1 {printf "  %-20s type=%-10s avail=%s\n", $1, $2, $5}'
-echo
-ask "Enter the storage name to use (e.g. local-lvm, local-zfs, SSD_100GB):"
-read -rp "> " STORAGE
-# Validate storage exists
-pvesm status | awk 'NR>1 {print $1}' | grep -qx "$STORAGE" || error "Storage '${STORAGE}' not found. Check the list above."
-success "Storage set to: ${STORAGE}"
-echo
+step_summary() {
+    _section "Step 3: Summary"
+    local vlan_display="${VLAN_TAG:-none (untagged)}"
+    printf "\n"
+    printf "   %-12s %s\n" "VM ID:"    "$VMID"
+    printf "   %-12s %s\n" "VM Name:"  "$VMNAME"
+    printf "   %-12s %s\n" "Storage:"  "$STORAGE"
+    printf "   %-12s %s\n" "RAM:"      "${RAM} MB"
+    printf "   %-12s %s\n" "Cores:"    "$CORES"
+    printf "   %-12s %s\n" "Bridge:"   "$BRIDGE"
+    printf "   %-12s %s\n" "VLAN:"     "$vlan_display"
+    printf "   %-12s %s\n" "HAOS IP:"  "$HAOS_IP"
+    printf "\n"
+    _confirm "Proceed with the above settings?"
+}
 
-# RAM
-ask "Enter RAM in MB (default: 4096, minimum recommended: 2048):"
-read -rp "> " RAM
-RAM="${RAM:-4096}"
-[[ "$RAM" -ge 2048 ]] || warn "Less than 2048 MB RAM may cause instability."
-success "RAM set to: ${RAM} MB"
-echo
+step_download() {
+    _section "Step 4: Download Latest HAOS Image"
+    _log INFO "Querying GitHub API for the latest HAOS release..."
 
-# CPU cores
-ask "Enter number of CPU cores (default: 2):"
-read -rp "> " CORES
-CORES="${CORES:-2}"
-[[ "$CORES" -ge 1 ]] || CORES=2
-success "Cores set to: ${CORES}"
-echo
+    local release_json
+    release_json=$(curl -sf https://api.github.com/repos/home-assistant/operating-system/releases/latest) \
+        || _die "Failed to reach GitHub API. Check your network connection."
 
-# Network bridge
-ask "Enter the network bridge (default: vmbr0):"
-read -rp "> " BRIDGE
-BRIDGE="${BRIDGE:-vmbr0}"
-success "Bridge set to: ${BRIDGE}"
-echo
+    DOWNLOAD_URL=$(printf '%s' "$release_json" \
+        | grep -oP '"browser_download_url":\s*"\Khttps://github[^"]*haos_ova-[^"]*\.qcow2\.xz(?=")' \
+        | head -1)
+    [[ -n "$DOWNLOAD_URL" ]] || _die "Could not find a qcow2.xz URL in the latest release."
 
-# HAOS IP (informational - for final access URL only)
-ask "Enter the IP address HAOS will use (for your reference at the end):"
-read -rp "> " HAOS_IP
-HAOS_IP="${HAOS_IP:-<HAOS-IP>}"
-success "HAOS IP noted as: ${HAOS_IP}"
-echo
+    HAOS_VERSION=$(printf '%s' "$release_json" | grep -oP '"tag_name":\s*"\K[^"]+' | head -1)
+    _log INFO "Latest HAOS version : ${HAOS_VERSION}"
+    _log INFO "Download URL        : ${DOWNLOAD_URL}"
 
-# =============================================================================
-# STEP 2: Summary Confirmation
-# =============================================================================
-echo -e "${BOLD}─── Step 2: Summary ──────────────────────────────────────${RESET}"
-echo
-echo -e "  VM ID      : ${CYAN}${VMID}${RESET}"
-echo -e "  VM Name    : ${CYAN}${VMNAME}${RESET}"
-echo -e "  Storage    : ${CYAN}${STORAGE}${RESET}"
-echo -e "  RAM        : ${CYAN}${RAM} MB${RESET}"
-echo -e "  CPU Cores  : ${CYAN}${CORES}${RESET}"
-echo -e "  Network    : ${CYAN}${BRIDGE}${RESET}"
-echo -e "  HAOS IP    : ${CYAN}${HAOS_IP}${RESET}"
-echo
-confirm "Proceed with the above settings?"
-echo
+    _confirm "Download HAOS ${HAOS_VERSION}?"
+    _log INFO "Downloading to ${TMPXZ}..."
+    wget --progress=bar:force -O "$TMPXZ" "$DOWNLOAD_URL" 2>&1 || _die "Download failed."
+    _log PASS "Download complete."
+}
 
-# =============================================================================
-# STEP 3: Download Latest HAOS qcow2 Image
-# =============================================================================
-echo -e "${BOLD}─── Step 3: Downloading HAOS Image ──────────────────────${RESET}"
-info "Querying GitHub API for the latest HAOS release..."
+step_extract() {
+    _section "Step 5: Extract Image"
+    _confirm "Extract ${TMPXZ}?"
+    _log INFO "Extracting image..."
+    unxz -v "$TMPXZ" || _die "Extraction failed."
+    [[ -f "$TMPQCOW2" ]] || _die "Expected ${TMPQCOW2} after extraction but file not found."
+    _log PASS "Extraction complete: ${TMPQCOW2}"
+}
 
-RELEASE_JSON=$(curl -sf https://api.github.com/repos/home-assistant/operating-system/releases/latest) \
-    || error "Failed to reach GitHub API. Check your network connection."
+step_create_vm() {
+    _section "Step 6: Create VM"
+    _confirm "Create VM ${VMID} (${VMNAME})?"
 
-DOWNLOAD_URL=$(echo "$RELEASE_JSON" | grep -oP '"browser_download_url":\s*"\Khttps://github[^"]*haos_ova-[^"]*\.qcow2\.xz(?=")' | head -1)
-[[ -n "$DOWNLOAD_URL" ]] || error "Could not find a qcow2.xz download URL in the latest release."
+    # Build net0 string — conditionally append tag= if VLAN is set
+    local net0="virtio,bridge=${BRIDGE}"
+    [[ -n "${VLAN_TAG:-}" ]] && net0="${net0},tag=${VLAN_TAG}"
 
-HAOS_VERSION=$(echo "$RELEASE_JSON" | grep -oP '"tag_name":\s*"\K[^"]+' | head -1)
-info "Latest HAOS version: ${HAOS_VERSION}"
-info "Download URL: ${DOWNLOAD_URL}"
-echo
-confirm "Download HAOS ${HAOS_VERSION}?"
+    _log INFO "Creating VM skeleton..."
+    qm create "$VMID" \
+        --name     "$VMNAME" \
+        --memory   "$RAM" \
+        --cores    "$CORES" \
+        --cpu      host \
+        --net0     "$net0" \
+        --ostype   l26 \
+        --bios     ovmf \
+        --machine  q35 \
+        --efidisk0 "${STORAGE}:0,efitype=4m,pre-enrolled-keys=0" \
+        --scsihw   virtio-scsi-pci \
+        --onboot   1 \
+        || _die "VM creation failed."
+    _log PASS "VM ${VMID} created."
+}
 
-TMPFILE="/tmp/HAOS.qcow2.xz"
-QCOW2FILE="/tmp/HAOS.qcow2"
+step_import_disk() {
+    _section "Step 7: Import Disk"
+    _confirm "Import HAOS disk into storage '${STORAGE}'?"
+    _log INFO "Importing disk (this may take a moment)..."
+    qm importdisk "$VMID" "$TMPQCOW2" "$STORAGE" || _die "Disk import failed."
+    _log PASS "Disk imported."
+}
 
-info "Downloading to ${TMPFILE}..."
-wget --progress=bar:force -O "$TMPFILE" "$DOWNLOAD_URL" 2>&1 || error "Download failed."
-success "Download complete."
-echo
+step_attach_disk() {
+    _section "Step 8: Attach Disk & Set Boot Order"
+    _confirm "Attach imported disk and set boot order?"
 
-# =============================================================================
-# STEP 4: Extract Image
-# =============================================================================
-echo -e "${BOLD}─── Step 4: Extracting Image ─────────────────────────────${RESET}"
-confirm "Extract the downloaded image?"
-info "Extracting ${TMPFILE} ..."
-unxz -v "$TMPFILE" || error "Extraction failed."
-[[ -f "$QCOW2FILE" ]] || error "Expected ${QCOW2FILE} after extraction, but file not found."
-success "Extraction complete: ${QCOW2FILE}"
-echo
+    # Try disk-1 first (slot 0 is the EFI disk), fall back to disk-0
+    local attached=0
+    for slot in 1 0; do
+        local disk_id="${STORAGE}:vm-${VMID}-disk-${slot}"
+        if qm set "$VMID" --scsi0 "${disk_id},discard=on" 2>/dev/null; then
+            _log PASS "Disk attached as scsi0 (${disk_id})."
+            attached=1
+            break
+        fi
+    done
+    if [[ "$attached" -eq 0 ]]; then
+        _log WARN "Could not auto-attach disk. Attach the 'Unused Disk' manually in the Proxmox UI."
+    fi
 
-# =============================================================================
-# STEP 5: Create the VM
-# =============================================================================
-echo -e "${BOLD}─── Step 5: Creating VM ──────────────────────────────────${RESET}"
-confirm "Create VM ${VMID} (${VMNAME}) in Proxmox?"
+    qm set "$VMID" --boot order=scsi0 \
+        && _log PASS "Boot order set to scsi0." \
+        || _log WARN "Could not set boot order automatically — set it manually in VM Options."
+}
 
-info "Creating VM skeleton..."
-qm create "$VMID" \
-    --name "$VMNAME" \
-    --memory "$RAM" \
-    --cores "$CORES" \
-    --cpu host \
-    --net0 virtio,bridge="${BRIDGE}" \
-    --ostype l26 \
-    --bios ovmf \
-    --machine q35 \
-    --efidisk0 "${STORAGE}:0,efitype=4m,pre-enrolled-keys=0" \
-    --scsihw virtio-scsi-pci \
-    --onboot 1
-success "VM ${VMID} created."
-echo
+step_cleanup() {
+    _section "Step 9: Cleanup"
+    _confirm "Remove temporary file ${TMPQCOW2}?"
+    rm -f "$TMPQCOW2"
+    _log PASS "Temp file removed."
+}
 
-# =============================================================================
-# STEP 6: Import Disk
-# =============================================================================
-echo -e "${BOLD}─── Step 6: Importing Disk ───────────────────────────────${RESET}"
-confirm "Import the HAOS qcow2 disk into storage '${STORAGE}'?"
-info "This may take a minute depending on your storage speed..."
-qm importdisk "$VMID" "$QCOW2FILE" "$STORAGE" || error "Disk import failed."
-success "Disk imported successfully."
-echo
+step_start_vm() {
+    _section "Step 10: Start VM"
+    _confirm "Start VM ${VMID} now?"
+    qm start "$VMID" || _die "Failed to start VM. Check the Proxmox UI for details."
+    _log PASS "VM ${VMID} is starting!"
+}
 
-# =============================================================================
-# STEP 7: Attach Disk & Configure Boot
-# =============================================================================
-echo -e "${BOLD}─── Step 7: Attaching Disk & Setting Boot Order ─────────${RESET}"
-confirm "Attach imported disk to VM and configure boot order?"
-
-info "Attaching disk as scsi0..."
-qm set "$VMID" --scsi0 "${STORAGE}:vm-${VMID}-disk-1,discard=on" \
-    || qm set "$VMID" --scsi0 "${STORAGE}:vm-${VMID}-disk-0,discard=on" \
-    || warn "Could not auto-attach disk. You may need to attach the 'Unused Disk' manually in the Proxmox UI."
-
-info "Setting boot order to scsi0..."
-qm set "$VMID" --boot order=scsi0 || warn "Could not set boot order automatically. Set it manually in VM Options."
-
-success "Disk attached and boot order configured."
-echo
+step_done() {
+    printf "\n%s%s" "${grn}" "${bld}"
+    printf "╔══════════════════════════════════════════════════════╗\n"
+    printf "║           Installation Complete!                     ║\n"
+    printf "╚══════════════════════════════════════════════════════╝\n"
+    printf "%s\n" "${rst}"
+    printf "  HAOS is booting. First boot may take %s3–5 minutes%s.\n" "${bld}" "${rst}"
+    printf "  Open your browser and navigate to:\n"
+    printf "  %s%s  http://%s:8123%s\n\n" "${cyn}" "${bld}" "${HAOS_IP}" "${rst}"
+    printf "  Monitor boot progress: Proxmox UI → VM %s → Console\n\n" "${VMID}"
+    printf "  %sNote:%s If the disk was not attached automatically,\n" "${ylw}" "${rst}"
+    printf "  go to VM %s → Hardware → double-click 'Unused Disk' → Add.\n" "${VMID}"
+    printf "  Then: VM Options → Boot Order → enable scsi0 first.\n\n"
+}
 
 # =============================================================================
-# STEP 8: Cleanup
+# MAIN
 # =============================================================================
-echo -e "${BOLD}─── Step 8: Cleanup ──────────────────────────────────────${RESET}"
-confirm "Remove the temporary qcow2 file from /tmp?"
-rm -f "$QCOW2FILE"
-success "Cleanup done."
-echo
 
-# =============================================================================
-# STEP 9: Start VM
-# =============================================================================
-echo -e "${BOLD}─── Step 9: Start VM ─────────────────────────────────────${RESET}"
-confirm "Start the HAOS VM now?"
-info "Starting VM ${VMID}..."
-qm start "$VMID" || error "Failed to start VM. Check the Proxmox UI for details."
-success "VM ${VMID} is starting!"
-echo
+main() {
+    _color_setup
 
-# =============================================================================
-# Done
-# =============================================================================
-echo -e "${BOLD}${GREEN}"
-echo "╔══════════════════════════════════════════════════════╗"
-echo "║           Installation Complete!                     ║"
-echo "╚══════════════════════════════════════════════════════╝"
-echo -e "${RESET}"
-echo -e "  HAOS is booting. First boot may take ${BOLD}3-5 minutes${RESET}."
-echo -e "  Once ready, open your browser and go to:"
-echo -e "  ${BOLD}${CYAN}http://${HAOS_IP}:8123${RESET}"
-echo
-echo -e "  You can monitor boot progress in the Proxmox web UI:"
-echo -e "  ${BOLD}VM ${VMID} → Console${RESET}"
-echo
-echo -e "${YELLOW}Note: If the Unused Disk was not attached automatically,${RESET}"
-echo -e "${YELLOW}go to VM ${VMID} → Hardware → double-click 'Unused Disk' → Add.${RESET}"
-echo -e "${YELLOW}Then set Boot Order: VM Options → Boot Order → enable scsi0 first.${RESET}"
-echo
+    # Shared temp file paths (set once, used across steps)
+    readonly TMPXZ="/tmp/HAOS.qcow2.xz"
+    readonly TMPQCOW2="/tmp/HAOS.qcow2"
+
+    # Declare config vars (populated by step_collect_input)
+    VMID="" VMNAME="" STORAGE="" RAM="" CORES="" BRIDGE="" VLAN_TAG="" HAOS_IP=""
+    DOWNLOAD_URL="" HAOS_VERSION=""
+
+    _banner
+    step_preflight
+    step_collect_input
+    step_summary
+    step_download
+    step_extract
+    step_create_vm
+    step_import_disk
+    step_attach_disk
+    step_cleanup
+    step_start_vm
+    step_done
+}
+
+main "$@"
