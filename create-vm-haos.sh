@@ -6,6 +6,8 @@
 
 set -euo pipefail
 
+FORCE=0
+
 # =============================================================================
 # LOGGING & COLOR UTILITIES
 # =============================================================================
@@ -64,22 +66,24 @@ _die() { _log FAIL "$1"; exit 1; }
 # =============================================================================
 
 _confirm_yes() {
-    local prompt="${1:-Are you sure?}"
-    local reply
+    local prompt reply
+    prompt="${1:-Are you sure?}"
+    [[ "${forced_mode:-0}" == "1" ]] && { _log INFO "${prompt} ${suffix} [auto-yes]"; return 0; }
     read -r -p "$(printf " %s%s?%s    >> %s [Y/n]: " "${ylw}" "${bld}" "${rst}" "${prompt}")" reply
     case "${reply,,}" in
         y|yes|"") return 0 ;;
-        *) return 1 ;;
+        *)        return 1 ;;
     esac
 }
 
 _confirm_no() {
-    local prompt="${1:-Are you sure?}"
-    local reply
+    local prompt reply
+    prompt="${1:-Are you sure?}"
+    [[ "${forced_mode:-0}" == "1" ]] && { _log INFO "${prompt} ${suffix} [auto-no]"; return 1; }
     read -r -p "$(printf " %s%s?%s    >> %s [y/N]: " "${ylw}" "${bld}" "${rst}" "${prompt}")" reply
     case "${reply,,}" in
         y|yes) return 0 ;;
-        *) return 1 ;;
+        *)     return 1 ;;
     esac
 }
 
@@ -115,6 +119,26 @@ _ensure_cmd() {
     _check_cmd "$cmd" && return 0
     _log WARN "${cmd} not found — installing ${pkg}..."
     apt-get install -y "$pkg" -qq || _die "Failed to install ${pkg}."
+}
+
+_get_vm_ipv4() {
+    local vmid="$1"
+    qm agent "$vmid" network-get-interfaces 2>/dev/null \
+    | grep -oE '"ip-address"[[:space:]]*:[[:space:]]*"([0-9]{1,3}\.){3}[0-9]{1,3}"' \
+    | sed -E 's/.*"([0-9]{1,3}(\.[0-9]{1,3}){3})"/\1/' \
+    | grep -v '^127\.' \
+    | head -n 1
+}
+
+_get_vm_ipv6() {
+    local vmid="$1"
+    qm agent "$vmid" network-get-interfaces 2>/dev/null \
+    | grep -oE '"ip-address"[[:space:]]*:[[:space:]]*"([0-9a-fA-F:]+)"' \
+    | sed -E 's/.*"([0-9a-fA-F:]+)"/\1/' \
+    | grep ':' \
+    | grep -vi '^::1$' \
+    | grep -vi '^fe80:' \
+    | head -n 1
 }
 
 _valid_mac() {
@@ -282,7 +306,6 @@ step_summary() {
     printf "   %-12s %s\n" "MAC:"      "${MACADDR:-auto}"
     printf "   %-12s %s\n" "Bridge:"   "${BRIDGE}"
     printf "   %-12s %s\n" "VLAN:"     "${vlan_display}"
-    printf "   %-12s %s\n" "HAOS IP:"  "${HAOS_IP}"
     printf "\n"
     _confirm_yes "Proceed with the above settings?" || { _log WARN "Aborted by user."; exit 0; }
 }
@@ -327,17 +350,18 @@ step_create_vm() {
 
     _log INFO "Creating VM skeleton..."
     qm create "$VMID" \
-        --name     "$VMNAME" \
-        --memory   "$RAM" \
-        --cores    "$CORES" \
-        --cpu      host \
-        --net0     "$net0" \
-        --ostype   l26 \
-        --bios     ovmf \
-        --machine  q35 \
-        --efidisk0 "${STORAGE}:0,efitype=4m,pre-enrolled-keys=0" \
-        --scsihw   virtio-scsi-pci \
-        --onboot   1 \
+        --name      "${VMNAME}" \
+        --memory    "${RAM}" \
+        --cores     "${CORES}" \
+        --cpu       host \
+        --net0      "${net0}" \
+        --ostype    l26 \
+        --bios      ovmf \
+        --machine   q35 \
+        --efidisk0  "${STORAGE}:0,efitype=4m,pre-enrolled-keys=0" \
+        --scsihw    virtio-scsi-pci \
+        --onboot    1 \
+        --agent     enabled=1 \
         || _die "VM creation failed."
     ACTUAL_MAC=$(qm config "$VMID" | awk -F'[=,]' '/^net0:/ {print $2; exit}')
     [[ -n "${ACTUAL_MAC:-}" ]] || _log WARN "Could not read back the assigned MAC from qm config."
@@ -387,7 +411,17 @@ step_start_vm() {
     if _confirm_no "Start VM ${VMID} now?"; then
         qm start "$VMID" || _die "Failed to start VM. Check the Proxmox UI for details."
         VM_STARTED=1
-        _log PASS "VM ${VMID} is starting!"
+        VM_IPV4=""
+        VM_IPV6=""
+        if [[ "${VM_STARTED:-0}" == "1" ]]; then
+            _log INFO "Waiting for guest agent to report IP addresses..."
+            for _ in {1..30}; do
+                [[ -z "$VM_IPV4" ]] && VM_IPV4="$(_get_vm_ipv4 "$VMID" || true)"
+                [[ -z "$VM_IPV6" ]] && VM_IPV6="$(_get_vm_ipv6 "$VMID" || true)"
+                [[ -n "$VM_IPV4" || -n "$VM_IPV6" ]] && break
+                sleep 5
+            done
+        fi
     else
         VM_STARTED=0
         _log INFO "VM ${VMID} was created but not started."
@@ -400,22 +434,18 @@ step_done() {
     printf "║           Installation Complete!                     ║\n"
     printf "╚══════════════════════════════════════════════════════╝\n"
     printf "%s\n" "${rst}"
-    if [[ "${VM_STARTED:-0}" == "1" ]]; then
-        printf "  HAOS is booting. First boot may take %s3–5 minutes%s.\n" "${bld}" "${rst}"
-        printf "  Open your browser and navigate to:\n"
-        printf "  %s%s  http://%s:8123%s\n\n" "${cyn}" "${bld}" "${HAOS_IP}" "${rst}"
-    else
-        printf "  HAOS is not started yet. Start the VM when you are ready.\n"
-        printf "  When it is running, browse to:\n"
-        printf "  %s%s  http://%s:8123%s\n\n" "${cyn}" "${bld}" "${HAOS_IP}" "${rst}"
-    fi
     printf "  Monitor boot progress: Proxmox UI → VM %s → Console\n" "${VMID}"
-    printf "  VM NIC MAC address: %s\n" "${ACTUAL_MAC:-unknown}"
-    printf "  Use that MAC for a DHCP reservation if you want %s on your router.\n" "${HAOS_IP}"
+    printf "  VM NIC MAC address: %s%s%s\n" "${cyn}" "${ACTUAL_MAC:-unknown}" "${rst}"
+    printf "  Use this MAC for a DHCP reservation on your router if you want a static IP.\n"
     if [[ "${VM_STARTED:-0}" == "1" ]]; then
-        printf "  VM state: started\n\n"
+        printf "  %s is booting. First boot may take %s3–5 minutes%s.\n" "$VMNAME" "${bld}" "${rst}"
+        printf "  Open your browser and navigate to:\n"
+        printf "  %s%s  http://%s:8123%s\n\n" "${cyn}" "${bld}" "${VM_IPV4}" "${rst}"
+        printf "  %s%s  http://%s:8123%s\n\n" "${cyn}" "${bld}" "${VM_IPV6}" "${rst}"
     else
-        printf "  VM state: not started yet — start it from Proxmox when ready.\n\n"
+        printf "  %s is not started yet — start it from Proxmox when ready.\n\n" "$VMNAME"
+        printf "  When it is running, get the IP from the Proxmox Console, or with this command:\n"
+        printf "  %s%s qm agent \"%s\" network-get-interfaces%s\n\n" "${cyn}" "${bld}" "${VMID}" "${rst}"
     fi
     printf "  %sNote:%s If the disk was not attached automatically,\n" "${ylw}" "${rst}"
     printf "  go to VM %s → Hardware → double-click 'Unused Disk' → Add.\n" "${VMID}"
@@ -425,11 +455,19 @@ step_done() {
 main() {
     _color_setup
 
+    while [[ $# -gt 0 ]]; do
+        case "${1,,}" in
+            -y|--force) FORCE=1; shift ;;
+            *)          _die "Unknown argument: $1" ;;
+        esac
+    done
+
     readonly TMPXZ="/tmp/HAOS.qcow2.xz"
     readonly TMPQCOW2="/tmp/HAOS.qcow2"
 
     VMID="" VMNAME="" STORAGE="" RAM="" CORES=""
-    MACADDR="" ACTUAL_MAC="" BRIDGE="" VLAN_TAG="" HAOS_IP=""
+    MACADDR="" ACTUAL_MAC="" BRIDGE="" VLAN_TAG=""
+    VM_IPV4="" VM_IPV6=""
     VM_STARTED=0 DOWNLOAD_URL="" HAOS_VERSION=""
 
     _banner
