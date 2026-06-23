@@ -435,13 +435,13 @@ step_done() {
     printf "╚══════════════════════════════════════════════════════╝\n"
     printf "%s\n" "${rst}"
     printf "  Monitor boot progress: Proxmox UI → VM %s → Console\n" "${VMID}"
-    printf "  VM NIC MAC address: %s%s%s\n" "${cyn}" "${ACTUAL_MAC:-unknown}" "${rst}"
-    printf "  Use this MAC for a DHCP reservation on your router if you want a static IP.\n"
+    printf "  Use the below MAC Address for a DHCP reservation on your router if you want a static IP.\n"
+    printf "    VM MAC: %s%s%s\n\n" "${cyn}" "${ACTUAL_MAC:-unknown}" "${rst}"
     if [[ "${VM_STARTED:-0}" == "1" ]]; then
-        printf "  %s is booting. First boot may take %s3–5 minutes%s.\n" "$VMNAME" "${bld}" "${rst}"
+        printf "  %s is booting. First boot may take %s3–5 minutes%s.\n\n" "$VMNAME" "${bld}" "${rst}"
         printf "  Open your browser and navigate to:\n"
-        printf "  %s%s  http://%s:8123%s\n\n" "${cyn}" "${bld}" "${VM_IPV4}" "${rst}"
-        printf "  %s%s  http://%s:8123%s\n\n" "${cyn}" "${bld}" "${VM_IPV6}" "${rst}"
+        printf "  %s  VM IPv4%s http://%s:8123%s\n" "${cyn}" "${bld}" "${VM_IPV4}" "${rst}"
+        printf "  %s  VM IPv6%s http://%s:8123%s\n\n" "${cyn}" "${bld}" "${VM_IPV6}" "${rst}"
     else
         printf "  %s is not started yet — start it from Proxmox when ready.\n\n" "$VMNAME"
         printf "  When it is running, get the IP from the Proxmox Console, or with this command:\n"
